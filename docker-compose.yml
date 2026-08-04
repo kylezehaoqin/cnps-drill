@@ -1,0 +1,13 @@
+services:
+  drill:
+    build: .
+    container_name: cnps-drill
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # bind to loopback; put nginx in front
+    volumes:
+      - ./data:/app/data        # photos + saved progress survive rebuilds
+    environment:
+      - PORT=8080
+      - PHOTOS_PER_TAXON=6
+      # - OFFLINE=1             # serve only what's already cached

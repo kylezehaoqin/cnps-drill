@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#E4E2D6">
+<title>Determination Drill — CNPS 500</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>Determination Drill</h1>
+    <div class="who" id="who"></div>
+  </header>
+
+  <div class="countdown" id="countdown" style="display:none"></div>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="drill" aria-selected="true">Drill</button>
+    <button role="tab" data-tab="exam" aria-selected="false">Exam</button>
+    <button role="tab" data-tab="setup" aria-selected="false">Setup</button>
+    <button role="tab" data-tab="progress" aria-selected="false">Progress</button>
+    <button role="tab" data-tab="browse" aria-selected="false">Browse</button>
+  </nav>
+
+  <div class="tally">
+    <div class="hot"><b id="t-due">0</b><span>Due</span></div>
+    <div><b id="t-new">0</b><span>New</span></div>
+    <div><b id="t-learn">0</b><span>Learning</span></div>
+    <div><b id="t-solid">0</b><span>Solid</span></div>
+    <div><b id="t-pool">0</b><span>Pool</span></div>
+  </div>
+
+  <!-- DRILL -->
+  <section class="panel on" id="p-drill">
+    <div id="stage"></div>
+    <div class="sync" id="sync"></div>
+  </section>
+
+  <!-- EXAM -->
+  <section class="panel" id="p-exam">
+    <div id="exam-stage"></div>
+  </section>
+
+  <!-- SETUP -->
+  <section class="panel" id="p-setup">
+    <fieldset>
+      <legend>What gets asked</legend>
+      <div class="opt-row" id="mode-row"></div>
+      <p class="hint">Typed answers are scored automatically — one point genus, one point specific epithet, the way
+        the Board scores it. A misspelling that still identifies the
+        taxon earns the point, the way a human grader would treat it, but comes back amber so the slip is visible.
+        Turn on <b>Strict spelling</b> below to require an exact match.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Timing</legend>
+      <label class="fld"><span>Exam date</span><input type="date" id="f-exam"></label>
+      <label class="fld"><span>Interval ladder</span>
+        <select id="f-ladder">
+          <option value="cram">Cram — minutes to hours</option>
+          <option value="long">Long term — days to months</option>
+        </select>
+      </label>
+      <label class="fld"><span>New per day</span><input type="number" id="f-newlimit" min="0" max="500" step="10" style="width:80px"></label>
+      <p class="hint">With an exam days away, the cram ladder repeats a card at 1 min, 6 min, 20 min, 1 h, 4 h, 12 h,
+        1 day, 2 days. The long-term ladder stretches to months and is what to switch to after Friday.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Restrict the pool</legend>
+      <label class="fld"><span>Family</span><select id="f-family"><option value="">All families</option></select></label>
+      <div class="opt-row" id="habit-row" style="margin:6px 0 8px"></div>
+      <div class="opt-row" id="misc-row"></div>
+      <p class="hint" id="pool-note"></p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Profile &amp; storage</legend>
+      <label class="fld"><span>Profile name</span><input type="search" id="f-profile" style="width:170px"></label>
+      <p class="hint" style="margin-bottom:12px">Progress writes to this browser immediately and mirrors to the server
+        under this profile name, so the same profile picks up where it left off on a phone or a second machine.
+        Different name means a separate, independent deck.</p>
+      <p class="hint" id="cache-note" style="margin-bottom:14px"></p>
+      <div class="opt-row">
+        <button class="btn ghost" id="btn-export">Export JSON</button>
+        <button class="danger" id="btn-reset">Reset this profile</button>
+      </div>
+    </fieldset>
+  </section>
+
+  <!-- PROGRESS -->
+  <section class="panel" id="p-progress">
+    <fieldset>
+      <legend>Last 24 hours</legend>
+      <p class="hint" id="today-note" style="margin:0"></p>
+    </fieldset>
+    <fieldset>
+      <legend>Accuracy by family</legend>
+      <p class="hint" style="margin:0 0 12px">Worst first, minimum three answers. Asteraceae is 72 of the 500 taxa,
+        Poaceae 37, Fabaceae 24 — those three alone are over a quarter of the list.</p>
+      <table id="fam-table"></table>
+    </fieldset>
+    <fieldset>
+      <legend>Leeches</legend>
+      <p class="hint" style="margin:0 0 12px">Three or more lapses. These want a photo session, not another flip.</p>
+      <table id="leech-table"></table>
+    </fieldset>
+  </section>
+
+  <!-- BROWSE -->
+  <section class="panel" id="p-browse">
+    <fieldset>
+      <legend>Full list</legend>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <input type="search" id="search" placeholder="filter by name or family"
+               style="flex:1;min-width:170px;padding:7px 9px">
+        <select id="browse-sort">
+          <option value="sci">Sort: scientific</option>
+          <option value="fam">Sort: family</option>
+          <option value="habit">Sort: habit</option>
+          <option value="weak">Sort: weakest first</option>
+        </select>
+        <span style="font-family:var(--mono);font-size:11px;color:var(--ink2)" id="browse-count"></span>
+      </div>
+      <div class="scroll"><table id="browse-table"></table></div>
+    </fieldset>
+  </section>
+
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

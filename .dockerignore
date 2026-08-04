@@ -1,0 +1,4 @@
+data/photos
+data/states
+node_modules
+*.tar.gz

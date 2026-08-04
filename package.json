@@ -1,0 +1,15 @@
+{
+  "name": "cnps-sight-id-drill",
+  "version": "1.0.0",
+  "description": "Sight-ID trainer for the CNPS Field Botanist certification",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/scoring.test.js",
+    "warm": "node scripts/warm.js",
+    "warm:retry": "node scripts/warm.js --retry"
+  }
+}

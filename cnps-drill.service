@@ -1,0 +1,23 @@
+# /etc/systemd/system/cnps-drill.service
+[Unit]
+Description=CNPS Sight-ID Drill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drill
+WorkingDirectory=/opt/cnps-drill
+Environment=PORT=8080
+Environment=DATA_DIR=/opt/cnps-drill/data
+ExecStart=/usr/bin/node /opt/cnps-drill/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cnps-drill/data
+
+[Install]
+WantedBy=multi-user.target
