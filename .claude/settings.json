@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./scripts/check.sh)",
+      "Bash(node:*)",
+      "Bash(npm test)",
+      "Bash(npm run:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(curl -s http://localhost:*)",
+      "Bash(curl -s http://127.0.0.1:*)",
+      "Bash(docker compose:*)",
+      "Read(//home/**)",
+      "Edit(public/**)",
+      "Edit(server.js)",
+      "Edit(scripts/**)",
+      "Edit(test/**)"
+    ],
+    "deny": [
+      "Read(./data/states/**)",
+      "Edit(./data/taxa.json)"
+    ]
+  }
+}
