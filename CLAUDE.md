@@ -36,15 +36,44 @@ data/photos/<id>/      cached plates + meta.json (attribution, licence)
 data/states/           saved progress, one JSON per profile
 ```
 
-## Commands
+## Workflow
+
+**Run `./scripts/check.sh` after every change.** It is the only gate that
+matters — seven steps covering syntax, the eval'd matcher slice, 73 scoring
+assertions including exhaustive 500x500 cross-collision checks, dataset
+integrity, the DOM id contract between `app.js` and `index.html`, a live server
+smoke test, and the `require.main` guard. Nothing here has type checking or a
+build step, so this script is what stands between a plausible-looking edit and
+a silent runtime failure.
+
+Slash commands: `/verify` runs it and explains failures, `/taxon` inspects how
+the matcher scores a specific guess, `/ship` verifies then commits.
 
 ```bash
+./scripts/check.sh                # everything — run this
 node server.js                    # :8080
-node test/scoring.test.js         # 48 assertions, must stay green
+node test/scoring.test.js         # scoring only
 node scripts/warm.js              # prefetch all photos (~25 min, throttled)
 node scripts/warm.js --retry      # re-attempt taxa that came back empty
 curl localhost:8080/api/cache-status
 ```
+
+## Where the traps are
+
+Two files are riskier to edit than their size suggests.
+
+`public/app.js` holds the matcher, and `test/scoring.test.js` reaches into it
+by **string offset** — the region between `function norm(` and the pool section
+marker. Move either marker and the tests keep passing while testing nothing.
+Step 2 of `check.sh` exists solely to catch that. If you refactor the matcher
+into a module, update the test to import it; never copy the functions.
+
+Matcher changes need a regression test in the same commit. Every rule in the
+Invariants section below was written against a real failure, and several look
+arbitrary without their reason attached — the three-letter stem rule, the
+head-noun gate, the token-exclusion. Loosening any of them reopens a specific
+collision that the exhaustive check will catch, so read the failure before
+assuming the test is wrong.
 
 ## Invariants
 
