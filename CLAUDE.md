@@ -72,7 +72,37 @@ No taxon's binomial may score full credit against any other taxon. It currently
 reports zero collisions. If a matcher change pushes that above zero, the change
 is wrong regardless of what else it fixes.
 
-**5. A near match earns the point but is not `clean`.**
+**5. Hyphenated epithets are compared space-free.**
+`key()` strips spaces, and `scoreBinomial` also tries adjacent-token joins, so
+`filix-femina`, `filix femina` and `filixfemina` all land on one key. Six taxa
+(*Athyrium filix-femina*, *Capsella bursa-pastoris*, *Elymus caput-medusae*,
+*Oxalis pes-caprae*, *Quercus john-tuckeri*, *Veronica anagallis-aquatica*)
+scored 1/2 against their own verbatim names before this.
+
+**6. A shortened common name needs all three gates: subset, head-noun
+agreement, and one non-generic word.** Subset alone produced 202 collisions —
+"White Alder" matched "California White Fir", because both head nouns are
+generic and the shared modifier carried the match. Head-noun agreement alone
+lets a bare "sage" match every *Salvia*. The residual 21 collisions are
+near-synonyms within a genus and are accepted deliberately; the test ratchets
+that ceiling.
+
+**7. "Gray or Foothill Pine" is two names, not one.** The head noun is
+distributed across `or` alternatives during phrase building. Without it, "gray
+pine" — the name most people use for *Pinus sabiniana* — matched nothing.
+
+**8. The document keydown handler must ignore events from inputs.**
+The answer field has its own Enter handler. When both fired, one keypress
+checked the answer *and* graded it away before the determination slip rendered,
+so a correct answer looked like it had been silently rejected.
+
+**9. Every fetch exit path drains or cancels the response body.**
+An unread body holds its socket in undici's pool with abort listeners attached;
+a few hundred error responses produce `MaxListenersExceededWarning` and a slow
+leak. See `drain()` and `req()` in `server.js`. All outbound calls also carry
+`AbortSignal.timeout`.
+
+**10. A near match earns the point but is not `clean`.**
 `pts` counts got + near; `exact` counts got only; `clean` means `exact === max`.
 A human grader accepts a spelling slip that still identifies the taxon, so the
 simulator would be pessimistic otherwise. The amber flag in the UI keys off

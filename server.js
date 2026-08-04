@@ -42,23 +42,44 @@ const INAT = 'https://api.inaturalist.org/v1';
 const LICENSES = 'cc0,cc-by,cc-by-nc,cc-by-sa,cc-by-nc-sa';
 const UA = 'cnps-sight-id-drill/1.0 (self-hosted study tool)';
 
-// Serialise outbound calls; iNat asks for <=60/min and no bursts.
+// Serialise outbound calls; iNat asks for <=60/min and no bursts. The queue is
+// a chain of promises, so each link must settle rather than accumulate.
 let chain = Promise.resolve();
 let lastCall = 0;
 function throttled(fn) {
-  chain = chain.then(async () => {
+  const run = chain.then(async () => {
     const wait = Math.max(0, 1100 - (Date.now() - lastCall));
     if (wait) await new Promise(r => setTimeout(r, wait));
     lastCall = Date.now();
     return fn();
-  }).catch(() => {});
-  return chain;
+  });
+  chain = run.then(() => {}, () => {});   // never let a rejection stall the queue
+  return run;
+}
+
+// An unread response body holds its socket open. Undici keeps those sockets in
+// the agent pool with abort listeners still attached, so a few hundred error
+// responses produce MaxListenersExceededWarning and a slow leak. Every exit
+// path from here drains or cancels the body.
+async function drain(res) {
+  try { if (res.body && !res.bodyUsed) await res.body.cancel(); } catch { /* already gone */ }
+}
+
+const TIMEOUT = Number(process.env.FETCH_TIMEOUT_MS || 20000);
+
+async function req(url, accept) {
+  const res = await fetch(url, {
+    headers: accept ? { 'User-Agent': UA, Accept: accept } : { 'User-Agent': UA },
+    signal: AbortSignal.timeout(TIMEOUT),
+  });
+  if (!res.ok) { await drain(res); throw new Error(`${res.status} ${url}`); }
+  return res;
 }
 
 async function jget(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`${res.status} ${url}`);
-  return res.json();
+  const res = await req(url, 'application/json');
+  try { return await res.json(); }
+  catch (e) { await drain(res); throw e; }
 }
 
 async function resolveTaxonId(taxon) {
@@ -96,9 +117,10 @@ async function fetchPhotoList(inatId) {
 }
 
 async function download(url, dest) {
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!res.ok) throw new Error(`img ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  const res = await req(url);
+  let buf;
+  try { buf = Buffer.from(await res.arrayBuffer()); }
+  catch (e) { await drain(res); throw e; }
   if (buf.length < 900) throw new Error('img too small');
   await fsp.writeFile(dest, buf);
   return buf.length;

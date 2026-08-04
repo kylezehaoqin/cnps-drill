@@ -125,9 +125,13 @@ function norm(s) {
   return String(s).toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\b(ssp|subsp|var|spp|f|forma|cv)\b/g, ' ')
+    .replace(/\b(ssp|subsp|var|spp|forma|cv)\b/g, ' ')
     .replace(/\s+/g, ' ').trim();
 }
+/* Hyphenated epithets (filix-femina, bursa-pastoris, pes-caprae) normalise to
+   two words. Comparing them space-free lets "filix femina", "filix-femina"
+   and "filixfemina" all land on the same key. */
+const key = s => norm(s).replace(/ /g, '');
 
 function lev(a, b) {
   if (a === b) return 0;
@@ -144,18 +148,17 @@ function lev(a, b) {
   return prev[n];
 }
 
-/* Tolerance scales with word length so long names get room for a dropped
-   syllable ("Escholzia" for "Eschscholzia") while short epithets stay
-   discriminating — "parryi" must not swallow "parishii". A near match still
-   earns the point, the way a human grader would treat a spelling slip; it is
-   flagged amber so the slip is visible. Strict mode demands exact. */
+/* Tolerance: an intact three-letter stem plus an edit distance under a
+   quarter of the target length. Both halves earn their keep. Hordeum
+   marinum and murinum are both on the list and differ by one letter, so
+   only the stem rule keeps them apart; the ratio is what lets "Escholzia"
+   through for "Eschscholzia". A near match scores the point the way a human
+   grader would treat a slip, and is flagged amber so the slip stays visible.
+   Strict mode demands an exact match. */
 function wordMatch(guess, target, strict) {
   if (!guess || !target) return 'miss';
   if (guess === target) return 'got';
   if (strict) return 'miss';
-  // Typos land in the middle and end of a word, not the stem, so an
-  // intact three-letter stem is required. Without it "Hordeum murinum"
-  // would pass as "Hordeum marinum" — two taxa that are both on the list.
   if (target.length < 5 || guess.length < 3) return 'miss';
   if (guess.slice(0, 3) !== target.slice(0, 3)) return 'miss';
   const d = lev(guess, target);
@@ -163,69 +166,109 @@ function wordMatch(guess, target, strict) {
   return d / target.length <= 0.25 ? 'near' : 'miss';
 }
 const scored = r => r === 'got' || r === 'near';
+const best = (a, b) => (a === 'got' || b === 'got') ? 'got' : (a === 'near' || b === 'near') ? 'near' : 'miss';
 
-/* Scores a Latin binomial the way the exam does: one point genus,
-   one point species. Genus-only taxa are worth one point total. */
+/* Scores a Latin binomial the way the Board does: one point genus, one point
+   specific epithet. Genus-only taxa are worth one point total. */
 function scoreBinomial(input, taxon, strict) {
-  const g = norm(input).split(' ').filter(Boolean);
-  const targetGenus = norm(taxon.genus);
-  const targetEpithet = taxon.epithet ? norm(taxon.epithet) : '';
-  const altGenera = (taxon.alts || []).map(a => norm(a).split(' ')[0]).filter(Boolean);
+  const toks = norm(input).split(' ').filter(Boolean);
+  if (!toks.length) return { genus: 'miss', species: taxon.epithet ? 'miss' : null,
+                             pts: 0, exact: 0, max: taxon.epithet ? 2 : 1, full: false, clean: false };
+
+  const gTarget = key(taxon.genus);
+  const eTarget = taxon.epithet ? key(taxon.epithet) : '';
+  const altG = (taxon.alts || []).map(a => key(norm(a).split(' ')[0])).filter(Boolean);
+  const altE = (taxon.alts || []).map(a => key(norm(a).split(' ').slice(1).join(' '))).filter(Boolean);
 
   const match = (cand, primary, alts) => {
     let r = wordMatch(cand, primary, strict);
-    if (r === 'miss') for (const a of alts) {
-      const ar = wordMatch(cand, a, strict);
-      if (ar !== 'miss') { r = ar; break; }
-    }
+    for (const a of alts) { if (r === 'got') break; r = best(r, wordMatch(cand, a, strict)); }
     return r;
   };
 
   let genus = 'miss', genusToken = -1;
-  g.forEach((cand, i) => {
-    const r = match(cand, targetGenus, altGenera);
+  toks.forEach((t, i) => {
+    const r = match(t, gTarget, altG);
     if (r === 'got' && genus !== 'got') { genus = 'got'; genusToken = i; }
     else if (r === 'near' && genus === 'miss') { genus = 'near'; genusToken = i; }
   });
 
   let species = null;
-  if (targetEpithet) {
+  if (eTarget) {
     species = 'miss';
-    const altEpithets = (taxon.alts || []).map(a => norm(a).split(' ')[1]).filter(Boolean);
-    g.forEach((cand, i) => {
-      // A token that already paid for the genus cannot also pay for the
-      // species, or "Cornus nuttallii" scores full marks on Corylus cornuta.
-      if (i === genusToken) return;
-      const r = match(cand, targetEpithet, altEpithets);
-      if (r === 'got' && species !== 'got') species = 'got';
-      else if (r === 'near' && species === 'miss') species = 'near';
-    });
+    // A token that already paid for the genus cannot also pay for the species,
+    // or "Cornus nuttallii" scores full marks against Corylus cornuta.
+    const rest = toks.filter((_, i) => i !== genusToken);
+    const cands = rest.slice();
+    if (rest.length > 1) {
+      cands.push(rest.join(''));                                  // filix femina -> filixfemina
+      for (let i = 0; i < rest.length - 1; i++) cands.push(rest[i] + rest[i + 1]);
+    }
+    for (const c of cands) {
+      species = best(species, match(c, eTarget, altE));
+      if (species === 'got') break;
+    }
   }
 
-  const pts = (scored(genus) ? 1 : 0) + (scored(species) ? 1 : 0);
+  const pts   = (scored(genus) ? 1 : 0) + (scored(species) ? 1 : 0);
   const exact = (genus === 'got' ? 1 : 0) + (species === 'got' ? 1 : 0);
-  const max = 1 + (targetEpithet ? 1 : 0);
+  const max   = 1 + (eTarget ? 1 : 0);
   return { genus, species, pts, exact, max, full: pts === max, clean: exact === max };
 }
 
-/* Common names carry alternates separated by commas or "or". */
+/* Words that carry no identifying weight in a California common name. A guess
+   made only of these is not an answer. */
+const GENERIC = new Set(('common western eastern northern southern coast coastal california californian '
+  + 'sierra sierran desert mountain mountains valley giant dwarf small large tall little great '
+  + 'grass grasses brome bunchgrass sedge rush reed fern oak pine fir cedar cypress willow maple '
+  + 'alder ash walnut cherry rose currant gooseberry sage sagebrush bush shrub tree vine herb weed '
+  + 'flower flowered leaf leaved leaves plant wild true false native').split(' '));
+
+/* Common names carry alternates separated by commas, ampersands or "or", and
+   people answer with a shortened form far more often than the full string.
+   "gray pine" for "Gray or Foothill Pine" and "poison oak" for "Western Poison
+   Oak" both have to land. */
 function scoreCommon(input, taxon, strict) {
   const guess = norm(input);
   if (!guess) return { result: 'miss', full: false };
-  const variants = new Set();
-  taxon.common.split(/,|\bor\b|&/).forEach(part => {
-    const p = norm(part);
-    if (p) { variants.add(p); if (p.split(' ').length > 1) variants.add(p.split(' ').slice(-1)[0]); }
+  const gToks = guess.split(' ').filter(w => w && w !== 'or');
+  if (!gToks.length) return { result: 'miss', full: false };
+
+  const phrases = new Set([norm(taxon.common)]);
+  taxon.common.split(/,|&/).forEach(chunk => {
+    // "Gray or Foothill Pine" names two things, and the head noun belongs to
+    // both. Without distributing it, "gray pine" — the name most people
+    // actually use for Pinus sabiniana — matches nothing.
+    const alts = chunk.split(/\bor\b/i).map(norm).filter(Boolean);
+    const tail = alts.length ? alts[alts.length - 1].split(' ') : [];
+    alts.forEach(a => {
+      const w = a.split(' ');
+      phrases.add(a);
+      if (w.length < tail.length) phrases.add(w.concat(tail.slice(w.length)).join(' '));
+    });
   });
-  variants.add(norm(taxon.common));
-  let best = 'miss';
-  for (const v of variants) {
-    const r = wordMatch(guess, v, strict);
-    if (r === 'got') return { result: 'got', full: true };
-    if (r === 'near') best = 'near';
-    if (v.includes(guess) && guess.length >= 5 && best === 'miss') best = 'near';
+
+  let out = 'miss';
+  for (const phrase of phrases) {
+    const pToks = phrase.split(' ').filter(w => w && w !== 'or');
+    out = best(out, wordMatch(guess.replace(/ /g, ''), phrase.replace(/ /g, ''), strict));
+    if (out === 'got') return { result: 'got', full: true };
+    if (strict) continue;
+
+    // A shortened answer is accepted only when three things hold: every word
+    // of the guess appears in the phrase, the head noun lines up, and the
+    // guess carries at least one non-generic word. All three are load-bearing.
+    // Subset alone let "White Alder" match "California White Fir" — 202 such
+    // collisions across the list, because the head nouns are generic and the
+    // shared modifier carried the match on its own.
+    if (!gToks.some(w => !GENERIC.has(w))) continue;
+    const has = w => pToks.some(p => p === w || scored(wordMatch(w, p, false)));
+    if (!gToks.every(has)) continue;
+    const head = gToks[gToks.length - 1], pHead = pToks[pToks.length - 1];
+    if (head !== pHead && !scored(wordMatch(head, pHead, false))) continue;
+    out = best(out, 'near');
   }
-  return { result: best, full: best !== 'miss' };
+  return { result: out, full: out !== 'miss' };
 }
 
 /* ============================ pool + scheduling ============================ */
@@ -382,7 +425,10 @@ function renderDrill() {
 
   let head = '';
   if (M.photo) {
-    head = `<div id="plate"></div><div class="ask">${M.ask}</div>`;
+    const want = activeMode === 'photo2sci'
+      ? '<b style="color:var(--det)">SCIENTIFIC NAME</b>'
+      : '<b style="color:var(--det)">COMMON NAME</b>';
+    head = `<div id="plate"></div><div class="ask">Write the ${want} for this specimen</div>`;
   } else if (activeMode === 'com2sci') {
     head = `<div class="ask">${M.ask}</div><p class="prompt">${esc(t.common)}</p>
             <p class="prompt-sub">${esc(habitLabel(t.habit))} \u00b7 ${esc(t.family)}</p>`;
@@ -455,9 +501,14 @@ function doCheck(skipped) {
 
   let scoreHTML = '', ok = false;
   if (activeMode === 'photo2sci' || activeMode === 'com2sci') {
-    const s = skipped ? { genus: 'miss', species: t.epithet ? 'miss' : null, pts: 0, max: t.epithet ? 2 : 1, full: false }
+    const s = skipped ? { genus: 'miss', species: t.epithet ? 'miss' : null, pts: 0, exact: 0, max: t.epithet ? 2 : 1, full: false, clean: false }
                       : scoreBinomial(val, t, state.cfg.strict);
     ok = s.full;
+    if (!ok && !skipped && scoreCommon(val, t, false).full) {
+      const slipHTML = `<div class="score"><span class="pt near">that is the common name and it is right \u2014 this card wanted the binomial</span></div>`;
+      reveal(false, slipHTML);
+      return;
+    }
     const chips = [`<span class="pt ${s.genus}">genus ${s.genus !== 'miss' ? '1' : '0'}/1</span>`];
     if (s.species !== null) chips.push(`<span class="pt ${s.species}">species ${s.species !== 'miss' ? '1' : '0'}/1</span>`);
     else chips.push(`<span class="pt got">genus-level taxon</span>`);
@@ -466,8 +517,15 @@ function doCheck(skipped) {
   } else {
     const s = skipped ? { result: 'miss', full: false } : scoreCommon(val, t, state.cfg.strict);
     ok = s.full;
-    scoreHTML = `<div class="score"><span class="pt ${s.result}">${
-      s.result === 'got' ? 'correct' : s.result === 'near' ? 'close' : 'not it'}</span></div>`;
+    const chips = [`<span class="pt ${s.result}">${
+      s.result === 'got' ? 'correct' : s.result === 'near' ? 'close enough' : 'not it'}</span>`];
+    // Two photo modes look almost identical, so answering the wrong one is
+    // easy and being told "not it" for a correct binomial is maddening.
+    if (!ok && !skipped && scoreBinomial(val, t, false).full) {
+      chips.push(`<span class="pt near">that is the scientific name and it is right \u2014 this card wanted the common name</span>`);
+      ok = true;
+    }
+    scoreHTML = `<div class="score">${chips.join('')}</div>`;
   }
   reveal(ok, scoreHTML);
 }
@@ -507,7 +565,11 @@ function reveal(ok, scoreHTML) {
 
   if (post) post.innerHTML = gradeHTML; else responder.innerHTML = gradeHTML;
 
+  const ansEl = $('#ans');
+  if (ansEl) { ansEl.readOnly = true; ansEl.blur(); }
   document.querySelectorAll('.grade button').forEach(b => { b.onclick = () => grade(Number(b.dataset.q)); });
+  const firstGrade = document.querySelector('.grade button[data-q="' + (ok ? '2' : '0') + '"]');
+  if (firstGrade) firstGrade.focus();
   if (MODES[activeMode].photo) showCredit();
 }
 
@@ -870,10 +932,10 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab
 
 document.addEventListener('keydown', e => {
   if (!$('#p-drill').classList.contains('on')) return;
-  if (/input|select|textarea/i.test(e.target.tagName)) {
-    if (e.key === 'Enter' && revealed) { e.preventDefault(); grade(answeredCorrect ? 2 : 0); }
-    return;
-  }
+  // The input has its own Enter handler. If this one also fired on Enter, a
+  // single keypress would check the answer and grade it away before the
+  // determination slip was ever visible.
+  if (/input|select|textarea/i.test(e.target.tagName)) return;
   if (revealed) {
     if (['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); grade(Number(e.key) - 1); }
     if (e.key === 'Enter') { e.preventDefault(); grade(answeredCorrect ? 2 : 0); }

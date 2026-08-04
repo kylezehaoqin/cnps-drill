@@ -114,6 +114,53 @@ for (const [wrote, actual] of pairs) {
 }
 
 /* ---------------------------------------------------------------- */
+console.log('\n# hyphenated epithets\n');
+for (const sci of ['Athyrium filix-femina', 'Capsella bursa-pastoris', 'Elymus caput-medusae',
+                   'Oxalis pes-caprae', 'Quercus john-tuckeri', 'Veronica anagallis-aquatica']) {
+  const t = find(sci);
+  check(scoreBinomial(sci, t, false).pts === 2, `verbatim "${sci}" scores 2/2`);
+  check(scoreBinomial(sci.replace('-', ' '), t, false).pts === 2, `space instead of hyphen still scores 2/2`);
+}
+
+/* ---------------------------------------------------------------- */
+console.log('\n# every taxon accepts its own name typed verbatim\n');
+check(TAXA.filter(t => !scoreBinomial(t.sci, t, false).full).length === 0,
+  'all 500 exact binomials score full marks');
+check(TAXA.filter(t => !scoreCommon(t.common, t, false).full).length === 0,
+  'all 500 exact common names score full marks');
+
+/* ---------------------------------------------------------------- */
+console.log('\n# shortened common names\n');
+const shortNames = [
+  ['gray pine',            'Pinus sabiniana', true,  'or-alternative with distributed head noun'],
+  ['foothill pine',        'Pinus sabiniana', true,  'the other or-alternative'],
+  ['poison oak',           'Toxicodendron diversilobum', true, 'dropped leading modifier'],
+  ['yerba santa',          'Eriodictyon californicum', true, 'dropped "California"'],
+  ['scarlet larkspur',     'Delphinium cardinale', true, 'distributed head noun'],
+  ['white alder',          'Abies concolor/lowiana', false, 'shared modifier must not carry a match'],
+  ['red brome',            'Abies magnifica', false, 'shared modifier, different plant'],
+  ['blue oak',             'Quercus agrifolia', false, 'wrong oak'],
+  ['sage',                 'Salvia apiana', false, 'a bare generic word is not an answer'],
+  ['oak',                  'Quercus lobata', false, 'ditto'],
+];
+for (const [g, sci, want, note] of shortNames) {
+  const r = scoreCommon(g, find(sci), false);
+  check(r.full === want, `"${g}" -> ${sci} = ${r.result} (want ${want ? 'accept' : 'reject'})  ${note}`);
+}
+
+/* ---------------------------------------------------------------- */
+console.log('\n# common names must not collide across taxa\n');
+let cn = 0;
+for (const a of TAXA) for (const b of TAXA) {
+  if (a.id !== b.id && scoreCommon(b.common, a, false).full) cn++;
+}
+// Residual collisions are near-synonyms within a genus ("Bush Monkeyflower"
+// is both its own taxon and a valid shortening of "Fuzzy Bush Monkeyflower").
+// Accepting them is the right call for a study tool; the determination slip
+// shows the full name either way. Ratchet: this must not grow.
+check(cn <= 21, `${cn} common-name collisions (ceiling 21)`);
+
+/* ---------------------------------------------------------------- */
 console.log('\n# exhaustive: no taxon earns full credit against any other\n');
 let collisions = 0;
 for (const target of TAXA) {
