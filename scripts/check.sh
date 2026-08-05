@@ -97,6 +97,14 @@ step "7. warm.js does not bind a port"
 # running container dies with EADDRINUSE.
 if grep -q 'require.main === module' server.js; then ok "listen() is guarded"; else bad "server.js calls listen() on import"; fi
 
+step "8. answer-check wiring cannot leak a click event into 'skipped'"
+# `elem.onclick = fn` calls fn(event); binding doCheck bare made a MouseEvent
+# arrive as `skipped`, scoring every typed answer as blank 0/2. Two guards must
+# both hold: doCheck coerces skipped to a strict boolean, and #check is bound
+# through a wrapper rather than the bare reference.
+if grep -Eq 'skipped *= *skipped *=== *true' public/app.js; then ok "doCheck coerces skipped to boolean"; else bad "doCheck no longer coerces skipped === true"; fi
+if grep -Eq "\\\$\('#check'\)\.onclick *= *doCheck *;" public/app.js; then bad "#check binds bare doCheck; a click leaks the event as skipped"; else ok "#check binding does not pass the click event"; fi
+
 printf '\n'
 if [ "$fails" -eq 0 ]; then printf '\033[32mall checks pass\033[0m\n'; else printf '\033[31m%s check(s) failed\033[0m\n' "$fails"; fi
 exit "$fails"

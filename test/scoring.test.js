@@ -28,6 +28,12 @@ if (typeof scoreBinomial !== 'function') { console.error('Matcher functions did 
 const TAXA = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/taxa.json'), 'utf8'));
 const find = s => TAXA.find(t => t.sci === s);
 
+// The stem-typo relaxation needs to know every real name on the list, so it can
+// forgive a typo inside the three-letter stem without forgiving a guess that is
+// itself a distinct taxon (Hordeum marinum vs murinum). The app calls this at
+// boot; the tests must too, or the relaxation stays inert.
+if (typeof globalThis.indexNames === 'function') globalThis.indexNames(TAXA);
+
 let fails = 0;
 const check = (ok, label) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'}  ${label}`); };
 
@@ -45,6 +51,7 @@ const cases = [
   ['Pinus ponderosa',          'Quercus agrifolia', 0, 'unrelated'],
   ['',                         'Quercus agrifolia', 0, 'blank'],
   ['Pseudotsuga menzesii',     'Pseudotsuga menziesii', 2, 'one-letter typo tolerated'],
+  ['Monuartia douglasii',      'Minuartia douglasii', 2, 'typo inside the three-letter stem forgiven'],
   ['Escholzia californica',    'Eschscholzia californica', 2, 'dropped syllable tolerated'],
   ['Arctostaphylos',           'Arctostaphylos spp.', 1, 'genus-level taxon caps at 1'],
   ['Arctostaphylos spp',       'Arctostaphylos spp.', 1, 'trailing spp ignored'],
@@ -53,6 +60,10 @@ const cases = [
   ['Lotus',                    'Acmispon [Lotus] spp.', 1, 'synonym on genus-level taxon'],
   ['Abies lowiana',            'Abies concolor/lowiana', 2, 'slashed epithet, alternate'],
   ['Abies concolor',           'Abies concolor/lowiana', 2, 'slashed epithet, primary'],
+  ['Cenchrus setaceus',        'Pennisetum setaceum', 2, 'current accepted name for a listed synonym'],
+  ['Sabulina douglasii',       'Minuartia douglasii', 2, 'current genus accepted alongside the listed one'],
+  ['Aphyllon fasciculatum',    'Orobanche fasciculata', 2, 'Jepson-current genus accepted'],
+  ['Schedonorus arundinaceus', 'Festuca arundinacea', 2, 'second synonym alt accepted'],
 ];
 for (const [input, sci, want, note] of cases) {
   const t = find(sci);

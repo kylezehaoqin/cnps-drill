@@ -89,12 +89,19 @@ server is already running dies with `EADDRINUSE`.
 epithet. Without it, `Cornus nuttallii` scored 2/2 against *Corylus cornuta* —
 the token `cornus` fuzzy-matched the genus *and* the epithet `cornuta`.
 
-**3. Fuzzy matching requires an intact three-letter stem.**
-`wordMatch` rejects anything whose first three characters differ, then allows an
-edit distance up to `0.25 * target.length`, capped at 3. Both halves matter:
-*Hordeum marinum* and *Hordeum murinum* are both on the list and are one letter
-apart, and only the stem rule keeps them distinct. `Escholzia` for
-*Eschscholzia* passes on the ratio; `parishii` for *parryi* fails on both.
+**3. Fuzzy matching guards the three-letter stem, but forgives one typo inside
+it unless the guess is itself a real name.**
+When the stems match, `wordMatch` allows an edit distance up to
+`0.25 * target.length`, capped at 3 (`Escholzia` for *Eschscholzia* passes on
+the ratio; `parishii` for *parryi* fails). When the stems *differ*, a single
+edit is still forgiven — `Monuartia` for *Minuartia* — but only if the guess is
+not in `RESERVED` for that slot. That veto is what keeps *Hordeum marinum* and
+*murinum* distinct now that a bare stem mismatch no longer rejects outright:
+both are real epithets, so each vetoes the other. `RESERVED` is built once by
+`indexNames(TAXA)` at boot (and in the tests); if it is empty the relaxation is
+inert and `wordMatch` stays strict, so an un-indexed matcher can never
+over-credit. The binomial slots pass `RESERVED.genera` / `RESERVED.epithets`;
+the common-name path passes nothing and keeps the strict stem rule.
 
 **4. `test/scoring.test.js` includes an exhaustive 500×500 cross-check.**
 No taxon's binomial may score full credit against any other taxon. It currently
@@ -124,6 +131,13 @@ pine" — the name most people use for *Pinus sabiniana* — matched nothing.
 The answer field has its own Enter handler. When both fired, one keypress
 checked the answer *and* graded it away before the determination slip rendered,
 so a correct answer looked like it had been silently rejected.
+
+**8a. Answer-check handlers must not leak a DOM event into `skipped`.**
+Same symptom, different mechanism: `elem.onclick = fn` calls `fn(event)`, so
+binding `$('#check').onclick = doCheck` smuggled a truthy `MouseEvent` into
+`doCheck(skipped)` and scored every clicked answer as blank `0/2`. Bind through a
+wrapper (`() => doCheck()`) *and* coerce `skipped = skipped === true` at the top
+of `doCheck`; both hold. `check.sh` step 8 is the static guard.
 
 **9. Every fetch exit path drains or cancels the response body.**
 An unread body holds its socket in undici's pool with abort listeners attached;

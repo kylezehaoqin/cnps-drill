@@ -155,18 +155,49 @@ function lev(a, b) {
    through for "Eschscholzia". A near match scores the point the way a human
    grader would treat a slip, and is flagged amber so the slip stays visible.
    Strict mode demands an exact match. */
-function wordMatch(guess, target, strict) {
+function wordMatch(guess, target, strict, reserved) {
   if (!guess || !target) return 'miss';
   if (guess === target) return 'got';
   if (strict) return 'miss';
   if (target.length < 5 || guess.length < 3) return 'miss';
-  if (guess.slice(0, 3) !== target.slice(0, 3)) return 'miss';
+  if (guess.slice(0, 3) !== target.slice(0, 3)) {
+    // The three-letter stem is normally sacred (it is the only thing keeping
+    // Hordeum marinum and murinum apart). But a single typo landing inside the
+    // stem — Monuartia for Minuartia — otherwise scores nothing, which no human
+    // grader would do. Forgive one edit in the stem ONLY when the typed word is
+    // not itself a real name in this slot; that veto is what still separates
+    // marinum from murinum, since both are real epithets on the list. No index
+    // (common-name path, or matcher used before indexNames ran) -> stay strict,
+    // so an un-indexed matcher can never over-credit.
+    if (!reserved || !reserved.size || reserved.has(guess)) return 'miss';
+    return lev(guess, target) <= 1 ? 'near' : 'miss';
+  }
   const d = lev(guess, target);
   if (d > 3) return 'miss';
   return d / target.length <= 0.25 ? 'near' : 'miss';
 }
 const scored = r => r === 'got' || r === 'near';
 const best = (a, b) => (a === 'got' || b === 'got') ? 'got' : (a === 'near' || b === 'near') ? 'near' : 'miss';
+
+/* Every real name in each binomial slot, so the stem-typo relaxation in
+   wordMatch can forgive a slip without forgiving a guess that is itself a
+   distinct taxon. Populated once from the taxa list (indexNames) at boot and in
+   the tests; empty until then, which keeps the relaxation inert and safe. */
+const RESERVED = { genera: new Set(), epithets: new Set() };
+function indexNames(taxa) {
+  RESERVED.genera.clear();
+  RESERVED.epithets.clear();
+  for (const t of taxa || []) {
+    if (t.genus) RESERVED.genera.add(key(t.genus));
+    if (t.epithet) RESERVED.epithets.add(key(t.epithet));
+    for (const alt of t.alts || []) {
+      const parts = norm(alt).split(' ').filter(Boolean);
+      if (parts[0]) RESERVED.genera.add(key(parts[0]));
+      const ep = key(parts.slice(1).join(' '));
+      if (ep) RESERVED.epithets.add(ep);
+    }
+  }
+}
 
 /* Scores a Latin binomial the way the Board does: one point genus, one point
    specific epithet. Genus-only taxa are worth one point total. */
@@ -180,15 +211,15 @@ function scoreBinomial(input, taxon, strict) {
   const altG = (taxon.alts || []).map(a => key(norm(a).split(' ')[0])).filter(Boolean);
   const altE = (taxon.alts || []).map(a => key(norm(a).split(' ').slice(1).join(' '))).filter(Boolean);
 
-  const match = (cand, primary, alts) => {
-    let r = wordMatch(cand, primary, strict);
-    for (const a of alts) { if (r === 'got') break; r = best(r, wordMatch(cand, a, strict)); }
+  const match = (cand, primary, alts, reserved) => {
+    let r = wordMatch(cand, primary, strict, reserved);
+    for (const a of alts) { if (r === 'got') break; r = best(r, wordMatch(cand, a, strict, reserved)); }
     return r;
   };
 
   let genus = 'miss', genusToken = -1;
   toks.forEach((t, i) => {
-    const r = match(t, gTarget, altG);
+    const r = match(t, gTarget, altG, RESERVED.genera);
     if (r === 'got' && genus !== 'got') { genus = 'got'; genusToken = i; }
     else if (r === 'near' && genus === 'miss') { genus = 'near'; genusToken = i; }
   });
@@ -205,7 +236,7 @@ function scoreBinomial(input, taxon, strict) {
       for (let i = 0; i < rest.length - 1; i++) cands.push(rest[i] + rest[i + 1]);
     }
     for (const c of cands) {
-      species = best(species, match(c, eTarget, altE));
+      species = best(species, match(c, eTarget, altE, RESERVED.epithets));
       if (species === 'got') break;
     }
   }
@@ -461,7 +492,7 @@ function renderDrill() {
     const input = $('#ans');
     input.focus();
     input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); doCheck(); } };
-    $('#check').onclick = doCheck;
+    $('#check').onclick = () => doCheck();
     $('#skip').onclick = () => doCheck(true);
   } else {
     renderChoices(responder, t, activeMode);
@@ -494,6 +525,11 @@ function renderChoices(host, t, mode) {
 }
 
 function doCheck(skipped) {
+  // Coerce to a real boolean. onclick handlers are called with a MouseEvent as
+  // the first argument, so binding `onclick = doCheck` would smuggle a truthy
+  // event into `skipped` and score a real answer as blank (0/2). Belt to the
+  // arrow-wrapped binding below; both must hold for a click to grade correctly.
+  skipped = skipped === true;
   if (revealed) return;
   const t = current;
   const val = skipped ? '' : ($('#ans') ? $('#ans').value.trim() : '');
@@ -953,6 +989,7 @@ document.addEventListener('keydown', e => {
   }
   BY_ID = new Map(TAXA.map(t => [t.id, t]));
   FAMILIES = [...new Set(TAXA.map(t => t.family))].sort();
+  indexNames(TAXA);  // arm the stem-typo relaxation with the real name list
 
   await load();
   $('#who').innerHTML = `profile <b>${esc(state.cfg.profile)}</b>`;
