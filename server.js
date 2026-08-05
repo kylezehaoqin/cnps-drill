@@ -225,7 +225,9 @@ const server = http.createServer(async (req, res) => {
 
   try {
     /* ---- taxa ---- */
-    if (p === '/api/taxa') return json(res, 200, TAXA, { 'Cache-Control': 'public, max-age=86400' });
+    // Short cache: the dataset is edited (synonym alts, fixes) close to the exam,
+    // and a day-long cache silently serves stale taxa until a hard refresh.
+    if (p === '/api/taxa') return json(res, 200, TAXA, { 'Cache-Control': 'public, max-age=300' });
 
     /* ---- state ---- */
     let m = p.match(/^\/api\/state\/([^/]+)$/);
