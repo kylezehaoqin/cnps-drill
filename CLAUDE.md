@@ -22,6 +22,34 @@ app — see *Scheduling* below.
 - Must run on a small VPS behind nginx or Caddy, and must keep working when the
   network is down (`OFFLINE=1`).
 
+## Architecture & conventions
+
+Full reasoning and ADRs in `docs/architecture.md`. The load-bearing rules:
+
+- **Extend within the constraint via native ES modules** — browsers and Node run
+  them with no bundler, so logic splits into modules without breaking "no build".
+  New tests `import` a module rather than the string-slice hack (see traps).
+- **New study modes go through a mode registry, not `if/else`.** A mode is
+  `{ id, prompt, score, reveal }`; add a module under `public/modes/`, don't
+  branch `doCheck`/`renderDrill`. Discrimination drills, cloze, MCQ, and decks
+  are all this same shape reusing the shared scheduler + scoring.
+- **Pure core, thin shell.** Keep logic in pure functions (`pickTaxon`,
+  `applyCuration`, `scoreBinomial` are the model); DOM/network stays at the edges.
+  It's what makes the code testable without a framework.
+- **`taxa.json` is the stable spine.** Per-taxon overrides and enrichment
+  (diagnostic characters, etymology, range) live in id-keyed side-car files —
+  `data/curate.json` is the pattern — lazy-loaded, never edited into `taxa.json`.
+- **State schema is additive and versioned.** Only add fields; migrate on load;
+  never break saved progress (see invariant on `localStorage`).
+- **Storage and data sources sit behind small adapters** so file→DB (accounts)
+  or a new photo source is a localized swap.
+- Stay zero-dep vanilla + ES modules until a real trigger (a team, UI complexity
+  outgrowing string templates, SSR/SEO). That is ADR-001 in `docs/architecture.md`.
+
+The codebase is mid-transition to this shape: `public/app.js` is still one file;
+the first refactor extracts `matcher.js` + `scheduler.js` and the mode registry,
+behaviour-preserving under `check.sh`.
+
 ## Layout
 
 ```
