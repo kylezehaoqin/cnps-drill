@@ -12,27 +12,24 @@ ok()   { printf '  ok    %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 step "1. syntax"
-for f in server.js scripts/warm.js public/app.js test/scoring.test.js test/photos.test.js; do
+for f in server.js scripts/warm.js public/app.js public/matcher.mjs test/scoring.test.mjs test/photos.test.js; do
   if node --check "$f" 2>/dev/null; then ok "$f"; else bad "$f does not parse"; fi
 done
 
-step "2. matcher region is still locatable"
-# test/scoring.test.js slices these functions out of app.js by string offset.
-# If either marker moves, the tests silently stop testing anything.
+step "2. matcher module loads and exports the scorers"
+# The matcher is a real ES module now (public/matcher.mjs), imported by app.js
+# and the tests — no more string-slice/eval hack. Guard that its exports exist.
 node -e '
-const fs=require("fs"); const s=fs.readFileSync("public/app.js","utf8");
-const a=s.indexOf("function norm("), b=s.indexOf("/* ============================ pool");
-if(a<0||b<0||b<=a){console.error("  FAIL  matcher slice markers missing or reordered in public/app.js");process.exit(1)}
-// Probe inside the eval scope: const arrows (key, scored, best) are lexical
-// bindings and never appear on globalThis, unlike function declarations.
-const names=["norm","key","lev","wordMatch","scored","best","scoreBinomial","scoreCommon"];
-const missing=(0,eval)(s.slice(a,b)+"\n;"+JSON.stringify(names)+".filter(n=>{try{return typeof eval(n)!==\"function\"}catch(e){return true}})");
-if(missing.length){console.error("  FAIL  not defined by the slice: "+missing.join(", "));process.exit(1)}
-console.log("  ok    slice defines "+names.join(", "));
+import("./public/matcher.mjs").then(m=>{
+  const names=["norm","key","lev","wordMatch","scored","best","indexNames","scoreBinomial","scoreCommon"];
+  const missing=names.filter(n=>typeof m[n]==="undefined");
+  if(missing.length){console.error("  FAIL  matcher.mjs missing exports: "+missing.join(", "));process.exit(1)}
+  console.log("  ok    matcher.mjs exports "+names.join(", "));
+}).catch(e=>{console.error("  FAIL  matcher.mjs did not load: "+e.message);process.exit(1)})
 ' || fails=$((fails+1))
 
 step "3. scoring tests"
-if out=$(node test/scoring.test.js 2>&1); then
+if out=$(node test/scoring.test.mjs 2>&1); then
   ok "$(printf '%s' "$out" | grep -c '^ok') assertions pass"
 else
   printf '%s\n' "$out" | grep -E '^FAIL|FAILURE' | sed 's/^/  /'
@@ -81,6 +78,11 @@ sleep 1.5
 hit() { curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$PORT_T$1"; }
 [ "$(hit /)" = 200 ]            && ok "GET /" || bad "GET / returned $(hit /)"
 [ "$(hit /app.js)" = 200 ]      && ok "GET /app.js" || bad "GET /app.js"
+# app.js is an ES module and imports matcher.mjs; the browser refuses a module
+# served with the wrong MIME, so check both status and content type.
+[ "$(hit /matcher.mjs)" = 200 ] && ok "GET /matcher.mjs" || bad "GET /matcher.mjs"
+mjs_ct=$(curl -s -o /dev/null -w '%{content_type}' --max-time 4 "http://127.0.0.1:$PORT_T/matcher.mjs")
+case "$mjs_ct" in *javascript*) ok "matcher.mjs served as javascript" ;; *) bad "matcher.mjs MIME is '$mjs_ct' (browser will refuse the module)" ;; esac
 [ "$(hit /styles.css)" = 200 ]  && ok "GET /styles.css" || bad "GET /styles.css"
 n=$(curl -s --max-time 4 "http://127.0.0.1:$PORT_T/api/taxa" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).length))')
 [ "$n" = 500 ] && ok "GET /api/taxa -> 500" || bad "GET /api/taxa -> $n"

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/scoring.test.js",
+    "test": "node test/scoring.test.mjs",
     "warm": "node scripts/warm.js",
     "warm:retry": "node scripts/warm.js --retry"
   }

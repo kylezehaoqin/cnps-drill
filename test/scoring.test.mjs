@@ -1,38 +1,18 @@
 #!/usr/bin/env node
-'use strict';
 /*
- * Scoring tests. No framework, no dependencies:  node test/scoring.test.js
- *
- * The matcher functions live inside public/app.js as browser globals, so we
- * slice that region out and eval it. If you move them, update SLICE_START /
- * SLICE_END below rather than duplicating the logic here — two copies of the
- * matcher that drift apart is worse than this hack.
+ * Scoring tests. No framework:  node test/scoring.test.mjs
+ * Imports the matcher directly from public/matcher.mjs — no slice/eval hack.
  */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { scoreBinomial, scoreCommon, wordMatch, norm, indexNames } from "../public/matcher.mjs";
 
-const fs = require('fs');
-const path = require('path');
-
-const ROOT = path.join(__dirname, '..');
-const SLICE_START = 'function norm(';
-const SLICE_END = '/* ============================ pool';
-
-const src = fs.readFileSync(path.join(ROOT, 'public/app.js'), 'utf8');
-const a = src.indexOf(SLICE_START), b = src.indexOf(SLICE_END);
-if (a < 0 || b < 0) { console.error('Could not locate the matcher region in public/app.js'); process.exit(2); }
-// Indirect eval: this file is strict, and a direct eval would keep the
-// declarations local to the eval scope. (0, eval) evaluates in global scope.
-(0, eval)(src.slice(a, b));
-const { scoreBinomial, scoreCommon, wordMatch, norm } = globalThis;
-if (typeof scoreBinomial !== 'function') { console.error('Matcher functions did not load'); process.exit(2); }
-
-const TAXA = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/taxa.json'), 'utf8'));
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(__dirname, "..");
+const TAXA = JSON.parse(fs.readFileSync(path.join(ROOT, "data/taxa.json"), "utf8"));
 const find = s => TAXA.find(t => t.sci === s);
-
-// The stem-typo relaxation needs to know every real name on the list, so it can
-// forgive a typo inside the three-letter stem without forgiving a guess that is
-// itself a distinct taxon (Hordeum marinum vs murinum). The app calls this at
-// boot; the tests must too, or the relaxation stays inert.
-if (typeof globalThis.indexNames === 'function') globalThis.indexNames(TAXA);
+indexNames(TAXA);  // arm the stem-typo relaxation, as the app does at boot
 
 let fails = 0;
 const check = (ok, label) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'}  ${label}`); };

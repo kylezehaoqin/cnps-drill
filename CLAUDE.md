@@ -46,18 +46,20 @@ Full reasoning and ADRs in `docs/architecture.md`. The load-bearing rules:
 - Stay zero-dep vanilla + ES modules until a real trigger (a team, UI complexity
   outgrowing string templates, SSR/SEO). That is ADR-001 in `docs/architecture.md`.
 
-The codebase is mid-transition to this shape: `public/app.js` is still one file;
-the first refactor extracts `matcher.js` + `scheduler.js` and the mode registry,
-behaviour-preserving under `check.sh`.
+The codebase is mid-transition to this shape: the matcher is extracted
+(`public/matcher.mjs`) and `app.js` is now an ES module. Still pending:
+extracting the scheduler and introducing the mode registry, behaviour-preserving
+under `check.sh`.
 
 ## Layout
 
 ```
 server.js              http, state API, iNaturalist photo proxy + disk cache
 scripts/warm.js        bulk photo prefetch
-test/scoring.test.js   the matcher tests — run these after any matcher change
+test/scoring.test.mjs  the matcher tests — run these after any matcher change
 public/index.html      shell markup
-public/app.js          all client logic (~900 lines, no modules)
+public/app.js          client logic, an ES module (imports matcher.mjs)
+public/matcher.mjs     the answer matcher — pure, no DOM; imported by app.js + tests
 public/styles.css      herbarium determination-slip aesthetic
 data/taxa.json         the 500 taxa, generated once, treated as source of truth
 data/photos/<id>/      cached plates + meta.json (attribution, licence)
@@ -67,10 +69,12 @@ data/states/           saved progress, one JSON per profile
 ## Workflow
 
 **Run `./scripts/check.sh` after every change.** It is the only gate that
-matters — seven steps covering syntax, the eval'd matcher slice, 73 scoring
-assertions including exhaustive 500x500 cross-collision checks, dataset
-integrity, the DOM id contract between `app.js` and `index.html`, a live server
-smoke test, and the `require.main` guard. Nothing here has type checking or a
+matters — eight steps covering syntax, that `matcher.mjs` still exports its
+scorers, the scoring assertions including exhaustive 500x500 cross-collision
+checks, dataset integrity, the DOM id contract between `app.js` and
+`index.html`, a live server smoke test (including the `.mjs` MIME so the browser
+will run the module), and the `require.main` guard. Nothing here has type
+checking or a build step, so this script is what stands between a plausible-looking edit and
 build step, so this script is what stands between a plausible-looking edit and
 a silent runtime failure.
 
@@ -80,7 +84,7 @@ the matcher scores a specific guess, `/ship` verifies then commits.
 ```bash
 ./scripts/check.sh                # everything — run this
 node server.js                    # :8080
-node test/scoring.test.js         # scoring only
+node test/scoring.test.mjs        # scoring only
 node scripts/warm.js              # prefetch all photos (~25 min, throttled)
 node scripts/warm.js --retry      # re-attempt taxa that came back empty
 curl localhost:8080/api/cache-status
@@ -88,13 +92,11 @@ curl localhost:8080/api/cache-status
 
 ## Where the traps are
 
-Two files are riskier to edit than their size suggests.
-
-`public/app.js` holds the matcher, and `test/scoring.test.js` reaches into it
-by **string offset** — the region between `function norm(` and the pool section
-marker. Move either marker and the tests keep passing while testing nothing.
-Step 2 of `check.sh` exists solely to catch that. If you refactor the matcher
-into a module, update the test to import it; never copy the functions.
+The matcher lives in `public/matcher.mjs` — pure, no DOM — and is `import`ed by
+both `public/app.js` (an ES module: `index.html` loads it with
+`<script type="module">`) and `test/scoring.test.mjs`. One source, imported two
+ways; never copy the functions. The server must serve `.mjs` with a JavaScript
+MIME or the browser refuses the module (check.sh step 6 guards this).
 
 Matcher changes need a regression test in the same commit. Every rule in the
 Invariants section below was written against a real failure, and several look
@@ -131,7 +133,7 @@ inert and `wordMatch` stays strict, so an un-indexed matcher can never
 over-credit. The binomial slots pass `RESERVED.genera` / `RESERVED.epithets`;
 the common-name path passes nothing and keeps the strict stem rule.
 
-**4. `test/scoring.test.js` includes an exhaustive 500×500 cross-check.**
+**4. `test/scoring.test.mjs` includes an exhaustive 500×500 cross-check.**
 No taxon's binomial may score full credit against any other taxon. It currently
 reports zero collisions. If a matcher change pushes that above zero, the change
 is wrong regardless of what else it fixes.
