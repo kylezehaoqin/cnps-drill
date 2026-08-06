@@ -29,10 +29,12 @@ Full reasoning and ADRs in `docs/architecture.md`. The load-bearing rules:
 - **Extend within the constraint via native ES modules** — browsers and Node run
   them with no bundler, so logic splits into modules without breaking "no build".
   New tests `import` a module rather than the string-slice hack (see traps).
-- **New study modes go through a mode registry, not `if/else`.** A mode is
-  `{ id, prompt, score, reveal }`; add a module under `public/modes/`, don't
-  branch `doCheck`/`renderDrill`. Discrimination drills, cloze, MCQ, and decks
-  are all this same shape reusing the shared scheduler + scoring.
+- **New study modes go through the `MODES` registry, not `if/else`.** Each entry
+  is data — `prompt` (photo|common|latin), `answer` (latin|common) and/or
+  `choice` (family|habit) — and render, check, and reveal dispatch off it. A new
+  mode is a new entry, never an `activeMode === '...'` branch. A radically
+  different mode (discrimination, cloze) adds its own behaviour fields to its
+  entry, reusing the shared scheduler + scoring.
 - **Pure core, thin shell.** Keep logic in pure functions (`pickTaxon`,
   `applyCuration`, `scoreBinomial` are the model); DOM/network stays at the edges.
   It's what makes the code testable without a framework.
@@ -46,10 +48,10 @@ Full reasoning and ADRs in `docs/architecture.md`. The load-bearing rules:
 - Stay zero-dep vanilla + ES modules until a real trigger (a team, UI complexity
   outgrowing string templates, SSR/SEO). That is ADR-001 in `docs/architecture.md`.
 
-The codebase is mid-transition to this shape: the matcher is extracted
-(`public/matcher.mjs`) and `app.js` is now an ES module. Still pending:
-extracting the scheduler and introducing the mode registry, behaviour-preserving
-under `check.sh`.
+The matcher and scheduler are extracted (`public/matcher.mjs`,
+`public/scheduler.mjs`), `app.js` is an ES module, and study modes dispatch off
+the `MODES` registry. Continue in this shape: shared logic goes in a module,
+a new mode goes in the registry — behaviour-preserving under `check.sh`.
 
 ## Layout
 

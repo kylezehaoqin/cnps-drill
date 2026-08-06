@@ -13,13 +13,18 @@ const HABITS = {
 };
 const habitLabel = h => h.split('/').map(x => HABITS[x.trim()] || x).join(' / ');
 
+// The study modes. `prompt` = what the card shows (photo | common | latin);
+// `answer` = how a typed reply is scored (latin | common); `choice` = the field a
+// multiple-choice mode asks for. All per-mode behaviour is data here \u2014 render,
+// check, and reveal dispatch off these, so a new mode is a new entry, not a new
+// `if (activeMode === ...)` branch.
 const MODES = {
-  photo2sci: { label: 'Photo \u2192 Latin',  ask: 'Name this specimen',            typed: true,  photo: true },
-  photo2com: { label: 'Photo \u2192 common', ask: 'Common name for this specimen', typed: true,  photo: true },
-  sci2com:   { label: 'Latin \u2192 common', ask: 'Give the common name',          typed: true,  photo: false },
-  com2sci:   { label: 'Common \u2192 Latin', ask: 'Give the scientific name',      typed: true,  photo: false },
-  sci2fam:   { label: 'Latin \u2192 family', ask: 'Which family?',                 typed: false, photo: false },
-  sci2hab:   { label: 'Latin \u2192 habit',  ask: 'Which habit class?',            typed: false, photo: false },
+  photo2sci: { label: 'Photo \u2192 Latin',  ask: 'Name this specimen',            typed: true,  photo: true,  prompt: 'photo',  answer: 'latin'  },
+  photo2com: { label: 'Photo \u2192 common', ask: 'Common name for this specimen', typed: true,  photo: true,  prompt: 'photo',  answer: 'common' },
+  sci2com:   { label: 'Latin \u2192 common', ask: 'Give the common name',          typed: true,  photo: false, prompt: 'latin',  answer: 'common' },
+  com2sci:   { label: 'Common \u2192 Latin', ask: 'Give the scientific name',      typed: true,  photo: false, prompt: 'common', answer: 'latin'  },
+  sci2fam:   { label: 'Latin \u2192 family', ask: 'Which family?',                 typed: false, photo: false, prompt: 'latin',  choice: 'family' },
+  sci2hab:   { label: 'Latin \u2192 habit',  ask: 'Which habit class?',            typed: false, photo: false, prompt: 'latin',  choice: 'habit'  },
 };
 
 const HABIT_GROUPS = {
@@ -257,11 +262,11 @@ function renderDrill() {
 
   let head = '';
   if (M.photo) {
-    const want = activeMode === 'photo2sci'
+    const want = M.answer === 'latin'
       ? '<b style="color:var(--det)">SCIENTIFIC NAME</b>'
       : '<b style="color:var(--det)">COMMON NAME</b>';
     head = `<div id="plate"></div><div class="ask">Write the ${want} for this specimen</div>`;
-  } else if (activeMode === 'com2sci') {
+  } else if (M.prompt === 'common') {
     head = `<div class="ask">${M.ask}</div><p class="prompt">${esc(t.common)}</p>
             <p class="prompt-sub">${esc(habitLabel(t.habit))} \u00b7 ${esc(t.family)}</p>`;
   } else {
@@ -279,7 +284,7 @@ function renderDrill() {
 
   const responder = $('#responder');
   if (M.typed) {
-    const latin = activeMode === 'photo2sci' || activeMode === 'com2sci';
+    const latin = M.answer === 'latin';
     responder.innerHTML = `<div class="entry">
       <label for="ans">${latin ? 'Determination \u2014 genus + specific epithet' : 'Common name'}</label>
       <input type="text" id="ans" class="${latin ? '' : 'plain'}" autocomplete="off"
@@ -301,7 +306,7 @@ function renderDrill() {
 }
 
 function renderChoices(host, t, mode) {
-  const isFam = mode === 'sci2fam';
+  const isFam = MODES[mode].choice === 'family';
   const correct = isFam ? t.family : t.habit;
   const source = isFam ? TAXA.filter(x => x.habit === t.habit).map(x => x.family) : Object.keys(HABITS);
   const opts = new Set([correct]);
@@ -337,7 +342,7 @@ function doCheck(skipped) {
   if (!skipped && !val) { $('#ans').focus(); return; }
 
   let scoreHTML = '', ok = false;
-  if (activeMode === 'photo2sci' || activeMode === 'com2sci') {
+  if (MODES[activeMode].answer === 'latin') {
     const s = skipped ? { genus: 'miss', species: t.epithet ? 'miss' : null, pts: 0, exact: 0, max: t.epithet ? 2 : 1, full: false, clean: false }
                       : scoreBinomial(val, t, state.cfg.strict);
     ok = s.full;
@@ -370,7 +375,7 @@ function doCheck(skipped) {
 function reveal(ok, scoreHTML) {
   revealed = true; answeredCorrect = ok;
   const t = current;
-  const showLatinFirst = activeMode === 'photo2sci' || activeMode === 'com2sci' || activeMode === 'photo2com';
+  const showLatinFirst = MODES[activeMode].prompt !== 'latin';
 
   const slip = document.createElement('div');
   slip.className = 'slip';

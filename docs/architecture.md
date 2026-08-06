@@ -49,21 +49,24 @@ public/
 ```
 This alone kills the string-slice test hack — `test/` imports `matcher.js` directly.
 
-### 2. Study-mode registry (strategy pattern) — the biggest extensibility win
-Replace the `activeMode` `if/else` with a registry of mode objects sharing one interface:
+### 2. Study-mode registry — the biggest extensibility win  *(done)*
+Instead of `activeMode === '...'` branches scattered through `renderDrill` / `doCheck` / `reveal`,
+the six modes are entries in one `MODES` registry, each **data** that render/check/reveal dispatch off:
 
 ```js
-// modes/photo2sci.js
-export default {
-  id: 'photo2sci', label: 'Photo → scientific name',
-  prompt(taxon) { /* what to show */ },
-  score(input, taxon, cfg) { /* -> {pts, exact, clean, ...} */ },
-  reveal(taxon, result) { /* determination slip */ },
+// public/app.js
+const MODES = {
+  photo2sci: { label, ask, typed: true,  photo: true,  prompt: 'photo',  answer: 'latin'  },
+  com2sci:   { label, ask, typed: true,  photo: false, prompt: 'common', answer: 'latin'  },
+  sci2fam:   { label, ask, typed: false, photo: false, prompt: 'latin',  choice: 'family' },
+  // …
 };
 ```
-`doCheck` / `renderDrill` dispatch through the registry. **New modes become new files, not new
-branches** — discrimination drills, cloze, MCQ, and custom-deck all implement this same interface and
-reuse the scheduler + scoring underneath.
+`prompt` = what the card shows (photo | common | latin); `answer` = how a typed reply is scored
+(latin | common); `choice` = the field a multiple-choice mode asks for. **A new mode is a new entry,
+not a new branch.** A radically different future mode (discrimination, cloze, MCQ) whose render/score
+don't fit these attributes adds its own behaviour *functions* to its entry — the registry is still
+the single dispatch point, reusing the shared scheduler + scoring.
 
 ### 3. Storage adapter (repository)
 Put state access behind a tiny interface — `loadState(profile)` / `saveState(profile, state)` — so
@@ -130,9 +133,19 @@ Until then, lean wins. If a trigger fires, record it as ADR-002 here before chan
 The point: after a modest refactor (modules + mode registry + adapters + side-car convention), each
 roadmap item is a small, isolated addition — not another branch in a 900-line file.
 
-## Suggested first step (when building resumes)
+## Structural refactor — done
 
-A **structural refactor before features**, done under the existing `check.sh` gate so behavior is
-provably unchanged: extract `matcher.js` + `scheduler.js` as ES modules (fixing the test hack), then
-introduce the mode registry with the *current* six modes ported 1:1. No new behavior — just the
-foundation that makes everything after it cheap. Only then start on the chosen feature.
+The behaviour-preserving refactor is complete, in three slices under `check.sh` (each verified in a
+real browser):
+
+1. **`matcher.mjs`** — the answer matcher as a pure ES module; `app.js` is now `<script type="module">`
+   and the scoring test imports the module (retiring the string-slice/eval hack). `.mjs` served with a
+   JS MIME.
+2. **`scheduler.mjs`** — the ladder + grade transitions, now with unit tests they never had.
+3. **`MODES` registry** — render/check/reveal dispatch off per-mode data; no `activeMode === '...'`
+   branches remain.
+
+Still available when needed (not yet built): the storage adapter (§3, for accounts), the data-source
+adapter (§4), and the side-car enrichment convention (§5) — pull these in as the features that need
+them arrive. Next: pick a feature from `learning-features.md` and build it as a registry entry +
+additive state, not a branch.
