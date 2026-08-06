@@ -1,5 +1,6 @@
 'use strict';
 import { scoreBinomial, scoreCommon, indexNames } from './matcher.mjs';
+import { ladderFor, isSolid as schedIsSolid, weakness, advance } from './scheduler.mjs';
 /* CNPS Sight-ID Drill — client */
 
 /* ============================ constants ============================ */
@@ -28,12 +29,6 @@ const HABIT_GROUPS = {
   'Ferns & allies':        t => /F$/.test(t.habit),
   'Vines':                 t => /V/.test(t.habit),
 };
-
-/* Cram ladder in minutes — the exam is days away, so day-scale
-   SM-2 intervals are useless. Long-term ladder is for after. */
-const LADDER_CRAM = [1, 6, 20, 60, 240, 720, 1440, 2880];
-const LADDER_LONG = [10, 1440, 4320, 10080, 21600, 43200, 86400];
-const MIN = 60000;
 
 const DEFAULT_CFG = {
   modes: ['photo2sci'], family: '', habits: [], nativity: 'all',
@@ -136,8 +131,8 @@ function pool() {
   });
 }
 
-const ladder = () => (state.cfg.ladder === 'cram' ? LADDER_CRAM : LADDER_LONG);
-const isSolid = k => k && k.step >= ladder().length - 2;
+const ladder = () => ladderFor(state.cfg);
+const isSolid = k => schedIsSolid(k, ladder());
 
 function counts() {
   const p = pool(), now = Date.now();
@@ -160,12 +155,7 @@ function buildQueue(preserveCurrent) {
     else if (k.due <= now) due.push(t);
   }
   // Weakest first among due: more lapses and lower accuracy surface sooner.
-  due.sort((a, b) => {
-    const ka = state.cards[a.id], kb = state.cards[b.id];
-    const sa = ka.lapses * 2 - (ka.right / Math.max(1, ka.right + ka.wrong));
-    const sb = kb.lapses * 2 - (kb.right / Math.max(1, kb.right + kb.wrong));
-    return sb - sa;
-  });
+  due.sort((a, b) => weakness(state.cards[b.id]) - weakness(state.cards[a.id]));
   shuffle(neu);
   const room = Math.max(0, state.cfg.newLimit - state.seenToday);
   queue = due.concat(neu.slice(0, room));
@@ -185,18 +175,9 @@ function nextCard() {
 function grade(q) {   // 0 again, 1 hard, 2 good, 3 easy
   const k = card(current.id);
   const wasNew = k.reps === 0;
-  const L = ladder();
-  if (q === 0) {
-    k.lapses++; k.wrong++; k.step = 0;
-    queue.splice(Math.min(queue.length, 3 + ((Math.random() * 4) | 0)), 0, current);
-  } else {
-    k.right++;
-    if (q === 1) k.step = Math.max(0, k.step);
-    if (q === 2) k.step = Math.min(L.length - 1, k.step + 1);
-    if (q === 3) k.step = Math.min(L.length - 1, k.step + 2);
-  }
-  k.due = Date.now() + L[Math.max(0, k.step)] * MIN;
-  k.reps++; k.last = Date.now();
+  advance(k, q, ladder(), Date.now());
+  // "Again" re-inserts the card a few slots ahead so it comes back this session.
+  if (q === 0) queue.splice(Math.min(queue.length, 3 + ((Math.random() * 4) | 0)), 0, current);
   if (wasNew) state.seenToday++;
   state.history.push({ t: Date.now(), id: current.id, q, mode: activeMode });
   if (state.history.length > 4000) state.history = state.history.slice(-3000);
