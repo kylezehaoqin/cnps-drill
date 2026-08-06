@@ -36,20 +36,33 @@ sudo -u drill node /opt/cnps-drill/scripts/warm.js
 ### Warm the cache before anything else
 
 The app draws photographs from iNaturalist, downloads them once, and serves them from
-`data/photos/` thereafter. **Run the warmer before handing the URL over.** Outbound calls
-are throttled to roughly one per second to stay inside iNaturalist's rate limits, so a
-full run over 500 taxa takes 20–30 minutes and lands around 400–700 MB.
+`data/photos/` thereafter. **Run the warmer before handing the URL over.** Each plate is
+picked from the taxon's *curated* reference photos (the representative set on the iNat
+taxon page), topped up with one lead photo per research-grade observation when those run
+short — chosen for typicality, not community faves. API calls are throttled to ~1/sec, but
+image bytes come from a CDN and download in parallel, so a full run over 500 taxa takes
+roughly 8–12 minutes and lands around 400–700 MB.
 
 ```bash
-node scripts/warm.js              # everything not yet cached
-node scripts/warm.js --retry      # re-attempt taxa that came back empty
-node scripts/warm.js --limit 60   # first 60 cold taxa, for a quick trial
+node scripts/warm.js                  # cold + empty taxa
+node scripts/warm.js --retry          # re-attempt anything not warm
+node scripts/warm.js --force          # re-fetch EVERY taxon (regenerate the set)
+node scripts/warm.js --limit 60       # cap the batch, for a quick trial
+node scripts/warm.js --concurrency 8  # taxa in flight at once (default 6)
 ```
+
+It ends with a coverage line — how many taxa have a full set, a partial set, or none.
 
 A taxon that comes back with no photos is negative-cached for six hours so the running
 server does not hammer iNaturalist on every card. `--retry` ignores that cache, so if a
 warm run half-failed on a flaky connection you can re-run it immediately rather than
-waiting the six hours out.
+waiting the six hours out. `--force` re-fetches even already-warm taxa — use it after a
+selection change, alongside `rm -rf data/photos/*` to drop the old plates first.
+
+To override the automatic pick for a taxon, edit **`data/curate.json`**:
+`{ "<taxonId>": { "block": [<photoId>], "pin": [{ "url": "...", "attribution": "...", "license": "cc-by" }] } }`
+— `block` drops a bad auto-pick (photo ids are in each `data/photos/<id>/meta.json`), `pin`
+forces a chosen image to the front. Re-warm the taxon to apply.
 
 Watch the progress lines. If everything reports `no photos`, the box has no outbound
 network or DNS — stop and fix that rather than letting it grind through all 500.

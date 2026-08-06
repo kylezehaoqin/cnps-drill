@@ -40,7 +40,63 @@ for (const d of [PHOTOS, STATES]) fs.mkdirSync(d, { recursive: true });
 
 const INAT = 'https://api.inaturalist.org/v1';
 const LICENSES = 'cc0,cc-by,cc-by-nc,cc-by-sa,cc-by-nc-sa';
+const LICENSE_SET = new Set(LICENSES.split(','));
+const licenseOk = code => LICENSE_SET.has(code);
 const UA = 'cnps-sight-id-drill/1.0 (self-hosted study tool)';
+
+// data/curate.json lets a human override the auto-picked plates per taxon:
+//   { "<taxonId>": { "block": [photoId...], "pin": [{url,attribution,license}...] } }
+// A block drops a bad auto-pick; a pin forces a chosen image to the front and is
+// never license-filtered (the curator vouched for it). Pure, so it is unit-tested
+// without the network — see test/photos.test.js.
+function applyCuration(candidates, entry, n) {
+  const block = new Set((entry && entry.block) || []);
+  const pins = ((entry && entry.pin) || []).map(p => ({
+    src: p.url, attribution: p.attribution || '', license: p.license || '', source: 'pin',
+  }));
+  const kept = candidates.filter(c => !block.has(c.photoId));
+  return [...pins, ...kept].slice(0, n);
+}
+
+// Which iNat search hit actually IS this taxon. iNat may file a listed species
+// under a subspecies or a reassigned genus, so we loosen rank but stay strict on
+// identity: a candidate must share the genus (or a synonym genus from `alts`)
+// and, for a species, carry the epithet. Nothing valid -> null; we never fall
+// through to iNat's fuzzy top hit and cache the wrong plant. Pure, unit-tested.
+const RANK_WEIGHT = { genus: 5, species: 4, subspecies: 3, variety: 2, subvariety: 2, form: 1 };
+function pickTaxon(candidates, taxon) {
+  const list = candidates || [];
+  const q = (taxon.query || '').toLowerCase();
+  const exact = list.find(c => (c.name || '').toLowerCase() === q);
+  if (exact) return exact.id;
+
+  // Accept the genus/epithet of the listed name AND of every alt binomial —
+  // synonym taxa list a former name while iNat serves the current one, and both
+  // parts can differ (Pennisetum setaceum -> Cenchrus setaceus). Genus from the
+  // first token, epithet from the last.
+  const genusOK = new Set(), epithetOK = new Set();
+  const learn = s => {
+    const t = String(s || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (t[0]) genusOK.add(t[0]);
+    if (t.length > 1) epithetOK.add(t[t.length - 1]);
+  };
+  learn(`${taxon.genus} ${taxon.epithet || ''}`);
+  for (const a of taxon.alts || []) learn(a);
+  const needEpithet = !(taxon.genusOnly || !taxon.epithet);
+
+  const valid = list.filter(c => {
+    const toks = (c.name || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!toks.length || !genusOK.has(toks[0])) return false;
+    return needEpithet ? toks.some(t => epithetOK.has(t)) : true;
+  });
+  if (!valid.length) return null;
+  valid.sort((a, b) => {
+    const aa = a.is_active === false ? 0 : 1, ba = b.is_active === false ? 0 : 1;
+    if (aa !== ba) return ba - aa;                                  // active first
+    return (RANK_WEIGHT[b.rank] || 0) - (RANK_WEIGHT[a.rank] || 0); // then broadest rank
+  });
+  return valid[0].id;
+}
 
 // Serialise outbound calls; iNat asks for <=60/min and no bursts. The queue is
 // a chain of promises, so each link must settle rather than accumulate.
@@ -84,36 +140,87 @@ async function jget(url) {
 
 async function resolveTaxonId(taxon) {
   const rank = taxon.genusOnly || !taxon.epithet ? 'genus' : 'species';
-  const url = `${INAT}/taxa?q=${encodeURIComponent(taxon.query)}&rank=${rank}&per_page=5`;
-  const j = await jget(url);
-  const wanted = taxon.query.toLowerCase();
-  const hit = (j.results || []).find(r => (r.name || '').toLowerCase() === wanted)
-           || (j.results || [])[0];
-  return hit ? hit.id : null;
+  const q = encodeURIComponent(taxon.query);
+
+  // Rank-constrained first (an exact species hit is the common case). If that
+  // finds nothing, drop the rank — iNat may have demoted this species to a
+  // subspecies (Juncus mexicanus -> Juncus balticus mexicanus) or merged its
+  // genus (Vulpia -> Festuca). pickTaxon validates identity on both paths, so a
+  // rank-less search can never resolve to the wrong plant.
+  let id = pickTaxon((await jget(`${INAT}/taxa?q=${q}&rank=${rank}&per_page=5`)).results, taxon);
+  if (id == null) id = pickTaxon((await jget(`${INAT}/taxa?q=${q}&per_page=5`)).results, taxon);
+  return id;
 }
 
-async function fetchPhotoList(inatId) {
+const medium = url => (url || '').replace('/square.', '/medium.');
+
+// Curated reference photos for the taxon. These are the community/curator set
+// shown on the iNat taxon page — chosen to represent the species, not ranked by
+// faves (which reward the striking and atypical). No query-level licence filter
+// exists here, so filter each one ourselves.
+async function fetchCuratedPhotos(inatId) {
+  const j = await jget(`${INAT}/taxa/${inatId}`);
+  const t = (j.results || [])[0] || {};
+  const out = [];
+  const seen = new Set();
+  for (const tp of t.taxon_photos || []) {
+    const p = tp.photo || {};
+    if (!p.id || seen.has(p.id) || !licenseOk(p.license_code)) continue;
+    const src = medium(p.medium_url || p.url);
+    if (!src) continue;
+    seen.add(p.id);
+    out.push({ photoId: p.id, src, attribution: p.attribution || '', license: p.license_code, source: 'taxon' });
+  }
+  return out;
+}
+
+// Fallback for taxa with few curated photos: one representative photo per
+// research-grade observation, for variety across individuals and places. NB no
+// `order_by=votes` — popularity is exactly the bias we are avoiding.
+async function fetchObservationPhotos(inatId) {
   const url = `${INAT}/observations?taxon_id=${inatId}&quality_grade=research`
     + `&photos=true&license=${LICENSES}&photo_license=${LICENSES}`
-    + `&order_by=votes&per_page=${PHOTOS_PER_TAXON * 2}`;
+    + `&per_page=${PHOTOS_PER_TAXON * 3}`;
   const j = await jget(url);
   const out = [];
   const seen = new Set();
   for (const obs of j.results || []) {
-    for (const p of obs.photos || []) {
-      if (!p.url || seen.has(p.id)) continue;
-      seen.add(p.id);
-      out.push({
-        src: p.url.replace('/square.', '/medium.'),
-        attribution: p.attribution || '',
-        license: p.license_code || '',
-        observed: obs.observed_on || '',
-        place: (obs.place_guess || '').split(',').slice(0, 2).join(',').trim(),
-      });
-      if (out.length >= PHOTOS_PER_TAXON) return out;
-    }
+    const p = (obs.photos || [])[0];   // the observation's own lead image only
+    if (!p || !p.url || seen.has(p.id) || !licenseOk(p.license_code)) continue;
+    seen.add(p.id);
+    out.push({
+      photoId: p.id, src: medium(p.url),
+      attribution: p.attribution || '', license: p.license_code,
+      observed: obs.observed_on || '',
+      place: (obs.place_guess || '').split(',').slice(0, 2).join(',').trim(),
+      source: 'observation',
+    });
   }
   return out;
+}
+
+// Curated set first; top up from observations only if short. Deduped by photoId.
+async function buildCandidates(inatId) {
+  let cands = await throttled(() => fetchCuratedPhotos(inatId));
+  if (cands.length < PHOTOS_PER_TAXON) {
+    const more = await throttled(() => fetchObservationPhotos(inatId));
+    const seen = new Set(cands.map(c => c.photoId));
+    for (const c of more) if (!seen.has(c.photoId)) { seen.add(c.photoId); cands.push(c); }
+  }
+  return cands;
+}
+
+// data/curate.json, re-read when its mtime changes. Missing/invalid -> {}.
+let curationCache = { mtime: -1, data: {} };
+function loadCuration() {
+  const f = path.join(DATA, 'curate.json');
+  let stat;
+  try { stat = fs.statSync(f); } catch { curationCache = { mtime: -1, data: {} }; return curationCache.data; }
+  if (stat.mtimeMs !== curationCache.mtime) {
+    try { curationCache = { mtime: stat.mtimeMs, data: JSON.parse(fs.readFileSync(f, 'utf8')) || {} }; }
+    catch { curationCache = { mtime: stat.mtimeMs, data: {} }; }
+  }
+  return curationCache.data;
 }
 
 async function download(url, dest) {
@@ -131,9 +238,12 @@ const inflight = new Map();
 async function ensurePhotos(id, force) {
   const dir = path.join(PHOTOS, String(id));
   const metaPath = path.join(dir, 'meta.json');
+  let prevInatId;
   try {
     const meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
-    if (meta.photos && meta.photos.length) return meta;
+    prevInatId = meta.inatId;   // reused below to skip the resolve call — but NOT under --force
+    // --force re-fetches even a warm taxon (used to regenerate the whole set).
+    if (!force && meta.photos && meta.photos.length) return meta;
     // A transient network fault must not lock a taxon out of retries for
     // hours; --retry passes force to punch through the negative cache.
     if (!force && meta.failedAt && Date.now() - meta.failedAt < 6 * 3600e3) return meta;
@@ -147,20 +257,31 @@ async function ensurePhotos(id, force) {
     await fsp.mkdir(dir, { recursive: true });
     let meta = { id, sci: taxon.sci, query: taxon.query, photos: [], fetchedAt: Date.now() };
     try {
-      const inatId = await throttled(() => resolveTaxonId(taxon));
+      // --force re-resolves: the cache may hold a wrong id from an older, looser
+      // resolver, and reusing it would re-download the wrong plant.
+      const inatId = (!force && prevInatId) || await throttled(() => resolveTaxonId(taxon));
       if (!inatId) throw new Error('no iNat taxon');
       meta.inatId = inatId;
-      const list = await throttled(() => fetchPhotoList(inatId));
-      let n = 0;
-      for (const p of list) {
-        const file = `${n}.jpg`;
+
+      const candidates = await buildCandidates(inatId);
+      const picked = applyCuration(candidates, loadCuration()[String(id)], PHOTOS_PER_TAXON);
+
+      // Drop any leftover plates from a previous warm so a shorter new set
+      // cannot leave orphaned files behind.
+      for (const f of await fsp.readdir(dir)) if (f.endsWith('.jpg')) await fsp.unlink(path.join(dir, f)).catch(() => {});
+
+      // Images come from the S3 CDN, not the rate-limited API, so download them
+      // in parallel. Index-based names may skip a number on a failed download;
+      // the client reads file names from meta, so gaps are harmless.
+      const saved = await Promise.all(picked.map(async (p, i) => {
+        const file = `${i}.jpg`;
         try {
           await download(p.src, path.join(dir, file));
-          meta.photos.push({ file, attribution: p.attribution, license: p.license,
-                             observed: p.observed, place: p.place });
-          n++;
-        } catch { /* skip this image */ }
-      }
+          return { file, photoId: p.photoId, attribution: p.attribution, license: p.license,
+                   observed: p.observed || '', place: p.place || '', source: p.source };
+        } catch { return null; }
+      }));
+      meta.photos = saved.filter(Boolean);
       if (!meta.photos.length) meta.failedAt = Date.now();
     } catch (e) {
       meta.failedAt = Date.now();
@@ -313,4 +434,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ensurePhotos, TAXA, server };
+module.exports = { ensurePhotos, TAXA, server, applyCuration, licenseOk, pickTaxon, resolveTaxonId };

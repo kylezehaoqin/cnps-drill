@@ -161,9 +161,30 @@ Images come from iNaturalist filtered to CC0 / CC-BY / CC-BY-NC / CC-BY-SA /
 CC-BY-NC-SA. The licences require attribution and none permit redistributing the
 cache as a dataset. Keep the credit line.
 
-**8. Outbound calls to iNaturalist stay throttled to ~1/sec.** `throttled()` in
-`server.js` serialises them. Do not parallelise the warmer.
+**8. iNaturalist API calls stay throttled to ~1/sec; image downloads do not.**
+`throttled()` in `server.js` serialises calls to `api.inaturalist.org` (taxon
+resolve, taxon detail, observations) at ~1/sec — do not parallelise those. Image
+bytes come from the S3 CDN (`inaturalist-open-data.s3.amazonaws.com`), which is
+not rate-limited, so `download()` runs off the throttle and the warmer fetches
+several taxa at once (`warm.js` concurrency pool, parallel downloads per taxon).
+A re-warm reuses the cached `meta.inatId` to skip the resolve call.
 
+**9. Plates are picked for typicality, not popularity.** `fetchCuratedPhotos`
+uses the taxon's curated `taxon_photos` (representative by construction); only
+when those run short does `fetchObservationPhotos` top up with one lead photo per
+research-grade observation — **without `order_by=votes`**, because faves reward
+the striking and aberrant, the opposite of a study plate. `data/curate.json`
+(`applyCuration`) lets a human `block` a bad auto-pick or `pin` a chosen image
+per taxon; pins carry their own attribution/licence and bypass the licence
+filter. Every candidate that isn't pinned must pass `licenseOk`.
+
+**10. Taxon resolution loosens rank but stays strict on identity.** `resolveTaxonId`
+searches rank-constrained first, then rank-less (iNat may file a listed species as
+a subspecies or under a merged genus), but every hit goes through `pickTaxon`,
+which accepts a candidate only on an exact name or a genus (or `alts` synonym
+genus) plus epithet match — otherwise `null`. Never resolve to iNat's fuzzy top
+hit; a wrong `inatId` caches the wrong plant, worse than a missing plate. A real
+genus move not in `alts` will read as absent — add the alt or a `curate.json` pin.
 ## Scheduling
 
 `LADDER_CRAM` is in **minutes**: 1, 6, 20, 60, 240, 720, 1440, 2880. Ordinary
