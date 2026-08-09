@@ -1,6 +1,7 @@
 'use strict';
 import { scoreBinomial, scoreCommon, indexNames } from './matcher.mjs';
 import { ladderFor, isSolid as schedIsSolid, weakness, advance } from './scheduler.mjs';
+import { recordMiss } from './stats.mjs';
 /* CNPS Sight-ID Drill — client */
 
 /* ============================ constants ============================ */
@@ -44,7 +45,7 @@ const DEFAULT_CFG = {
 /* ============================ state ============================ */
 
 let TAXA = [], BY_ID = new Map(), FAMILIES = [];
-let state = { cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [], cfg: { ...DEFAULT_CFG } };
+let state = { cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [], misses: [], cfg: { ...DEFAULT_CFG } };
 let queue = [], current = null, activeMode = 'photo2sci';
 let revealed = false, answeredCorrect = null, photoIndex = 0, photoData = null;
 let exam = null;
@@ -110,12 +111,14 @@ async function load(profile) {
   const chosen = weight(server) > weight(local) ? server : local;
 
   if (chosen) {
-    state = Object.assign({ cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [] }, chosen);
+    state = Object.assign({ cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [], misses: [] }, chosen);
     state.cfg = Object.assign({ ...DEFAULT_CFG }, chosen.cfg || {});
   }
   state.cfg.profile = cfgProfile;
   if (!Array.isArray(state.cfg.modes) || !state.cfg.modes.length) state.cfg.modes = ['photo2sci'];
   if (!Array.isArray(state.history)) state.history = [];
+  // Additive field: an older saved profile has no `misses` — start capturing.
+  if (!Array.isArray(state.misses)) state.misses = [];
   if (state.dayStamp !== dayStamp()) { state.dayStamp = dayStamp(); state.seenToday = 0; }
   localStorage.setItem('cnps-drill:lastProfile', cfgProfile);
 }
@@ -369,6 +372,12 @@ function doCheck(skipped) {
     }
     scoreHTML = `<div class="score">${chips.join('')}</div>`;
   }
+  // Confusion-graph capture: log what was typed when the answer was genuinely
+  // wrong. Only typed modes reach here, and the "right thing, wrong mode" cases
+  // above already set ok / returned, so this excludes those, near-misses,
+  // blanks, and "Don't know". Raw for now; a later slice resolves these into the
+  // graph. Persists on the next save() (grade).
+  if (!skipped && val && !ok) recordMiss(state.misses, { id: t.id, typed: val, mode: activeMode, at: Date.now() });
   reveal(ok, scoreHTML);
 }
 
