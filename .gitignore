@@ -4,3 +4,6 @@ node_modules/
 *.tar.gz
 .DS_Store
 .playwright-mcp/
+
+# Private planning notes, not published
+docs/productization-plan.md

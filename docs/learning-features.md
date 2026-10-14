@@ -1,6 +1,6 @@
 # Feature roadmap — from a drill into a real learning tool
 
-**Date:** 2026-08-05 · Companion to `docs/productization-plan.md`
+**Date:** 2026-08-05 · Companion to `docs/architecture.md`
 
 ## Framing
 
