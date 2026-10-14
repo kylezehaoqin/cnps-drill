@@ -1,0 +1,53 @@
+# Push to master = tests, then a new image on GHCR, then live on
+# https://cnps-drill.kzhqin.com. The deploy key can only run deploy-gate for
+# this app; the gate rolls back if the new image does not become healthy.
+# Server side: kylezehaoqin/infra (apps/cnps-drill/, MANUAL.md).
+name: deploy
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+concurrency:
+  group: deploy-cnps-drill
+  cancel-in-progress: false
+permissions:
+  contents: read
+  packages: write
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+  deploy:
+    needs: test
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: ghcr.io/kylezehaoqin/cnps-drill:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "DEPLOY_SSH_KEY is not set"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy@89.116.191.153 "$GITHUB_SHA" < /dev/null
