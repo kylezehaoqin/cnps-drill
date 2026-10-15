@@ -248,3 +248,13 @@ ease factor; the ladder is fixed and lapses reset to step 0.
 Comments explain *why*, especially where the code looks arbitrary — the stem
 rule, the token-exclusion, the minute-scale ladder all look like mistakes
 without their reasons attached. Match that. No comments that restate the code.
+
+## Deploy (since 2026-10-14)
+
+A push to `master` deploys: `.github/workflows/deploy.yml` runs `npm test`, builds an image, pushes it to `ghcr.io/kylezehaoqin/cnps-drill:<sha>`, then calls `deploy-gate app cnps-drill` on the VPS over SSH. The gate pulls the image, waits up to 60 s for the Docker `HEALTHCHECK`, and rolls back to the previous image if it fails. Production runs at https://cnps-drill.kzhqin.com behind Caddy basic auth (not nginx; `nginx.conf.example` and `cnps-drill.service` are the old manual paths).
+
+- **Keep the `HEALTHCHECK` in the `Dockerfile`.** The gate refuses images without one.
+- The production compose file is **not** this repo's `docker-compose.yml` (that one is for local dev). It is `~/dev/vps/apps/cnps-drill/compose.yml` in the private infra repo, with `OFFLINE=1`.
+- Data lives on the VPS at `/opt/apps/cnps-drill/data` (photos + `states/`), backed up nightly.
+- Watch a deploy: `gh run watch <id> -R kylezehaoqin/cnps-drill --exit-status`. Roll back: re-run the Actions job of the last good commit.
+- Full reference: `~/dev/vps/MANUAL.md`. Past mistakes and rules: `~/dev/vps/docs/LESSONS.md`.
