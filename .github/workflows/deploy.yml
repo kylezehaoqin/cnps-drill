@@ -10,9 +10,10 @@ on:
 concurrency:
   group: deploy-cnps-drill
   cancel-in-progress: false
+# Least privilege: the test job runs repo code, so only the deploy job gets
+# packages: write (test/workflow.test.mjs checks this).
 permissions:
   contents: read
-  packages: write
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -21,10 +22,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm test
+      # The full check: syntax, every test, dataset, DOM contract, server smoke test.
+      - run: bash scripts/check.sh
   deploy:
     needs: test
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     env:
       IMAGE: ghcr.io/kylezehaoqin/cnps-drill:${{ github.sha }}
     steps:

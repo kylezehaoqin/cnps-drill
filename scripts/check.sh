@@ -12,7 +12,7 @@ ok()   { printf '  ok    %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 step "1. syntax"
-for f in server.js scripts/warm.js public/app.js public/matcher.mjs public/scheduler.mjs public/stats.mjs test/scoring.test.mjs test/scheduler.test.mjs test/stats.test.mjs test/photos.test.js; do
+for f in server.js scripts/warm.js public/app.js public/matcher.mjs public/scheduler.mjs public/stats.mjs test/scoring.test.mjs test/scheduler.test.mjs test/stats.test.mjs test/photos.test.js test/workflow.test.mjs; do
   if node --check "$f" 2>/dev/null; then ok "$f"; else bad "$f does not parse"; fi
 done
 
@@ -52,6 +52,13 @@ if out=$(node test/stats.test.mjs 2>&1); then
 else
   printf '%s\n' "$out" | grep -E '^FAIL|FAILURE' | sed 's/^/  /'
   bad "stats tests"
+fi
+
+if out=$(node test/workflow.test.mjs 2>&1); then
+  ok "$(printf '%s' "$out" | grep -c '^ok') deploy-workflow assertions pass"
+else
+  printf '%s\n' "$out" | grep -E '^FAIL' | sed 's/^/  /'
+  bad "deploy-workflow tests"
 fi
 
 step "4. dataset"
