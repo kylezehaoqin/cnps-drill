@@ -417,14 +417,18 @@ function lockedOut(name, ip) {
   const pair = live(`${name}|${ip}`), all = live(name);
   return (!!pair && pair.n >= LOCK_AFTER) || (!!all && all.n >= LOCK_NAME_AFTER);
 }
+// A flood of made-up names adds keys; the cap drops the oldest (a Map keeps
+// insertion order), and a timer sweeps expired ones, so no request pays for it.
+const MAX_KEYS = 50000;
 function bump(key, by) {
   const f = live(key);
-  if (f) f.n += by; else if (by > 0) failures.set(key, { n: by, first: Date.now() });
+  if (f) { f.n += by; return; }
+  if (by <= 0) return;
+  if (failures.size >= MAX_KEYS) failures.delete(failures.keys().next().value);
+  failures.set(key, { n: by, first: Date.now() });
 }
+setInterval(() => { for (const k of [...failures.keys()]) live(k); }, 60e3).unref();
 function noteAttempt(name, ip) {
-  // scrypt caps logins at roughly 80 a second, so the map stays small; sweep
-  // expired entries anyway so it cannot grow for good.
-  if (failures.size > 10000) for (const k of [...failures.keys()]) live(k);
   bump(`${name}|${ip}`, 1); bump(name, 1);
 }
 function noteSuccess(name, ip) {
