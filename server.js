@@ -390,19 +390,46 @@ function startSession(req, res, user) {
   res.setHeader('Set-Cookie', auth.sessionCookie(tok, { maxAge: SESSION_MS, secure: isHttps(req) }));
 }
 
-// Per-username, not per-IP: behind the proxy every request shares one address.
-// Ten wrong passwords locks that name out for fifteen minutes.
+// Two counters per login attempt. Per name and client: ten tries locks that
+// pair for fifteen minutes, so a stranger cannot lock someone else out. Per
+// name alone, a higher bar stops a guesser who rotates addresses.
+// Attempts count when they arrive, before scrypt runs: counting after the
+// await let a parallel burst pass the check before any of it was counted.
 const failures = new Map();
-const LOCK_AFTER = 10, LOCK_MS = 15 * 60e3;
-function lockedOut(name) {
-  const f = failures.get(name);
-  if (f && Date.now() - f.first > LOCK_MS) { failures.delete(name); return false; }
-  return !!f && f.n >= LOCK_AFTER;
+const LOCK_AFTER = 10, LOCK_NAME_AFTER = 50, LOCK_MS = 15 * 60e3;
+
+// Caddy is the only client that can reach the port (127.0.0.1 in compose) and
+// it overwrites X-Forwarded-For with the real address. A direct client's own
+// header is not trusted.
+function clientIp(req) {
+  const peer = req.socket.remoteAddress || '';
+  const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  const xff = req.headers['x-forwarded-for'];
+  return loopback && xff ? String(xff).split(',').pop().trim() : peer;
 }
-function noteFailure(name) {
-  const f = failures.get(name);
-  if (!f || Date.now() - f.first > LOCK_MS) failures.set(name, { n: 1, first: Date.now() });
-  else f.n++;
+
+function live(key) {
+  const f = failures.get(key);
+  if (f && Date.now() - f.first > LOCK_MS) { failures.delete(key); return null; }
+  return f || null;
+}
+function lockedOut(name, ip) {
+  const pair = live(`${name}|${ip}`), all = live(name);
+  return (!!pair && pair.n >= LOCK_AFTER) || (!!all && all.n >= LOCK_NAME_AFTER);
+}
+function bump(key, by) {
+  const f = live(key);
+  if (f) f.n += by; else if (by > 0) failures.set(key, { n: by, first: Date.now() });
+}
+function noteAttempt(name, ip) {
+  // scrypt caps logins at roughly 80 a second, so the map stays small; sweep
+  // expired entries anyway so it cannot grow for good.
+  if (failures.size > 10000) for (const k of [...failures.keys()]) live(k);
+  bump(`${name}|${ip}`, 1); bump(name, 1);
+}
+function noteSuccess(name, ip) {
+  failures.delete(`${name}|${ip}`);
+  bump(name, -1);
 }
 
 async function readJson(req, limit) {
@@ -441,11 +468,13 @@ async function handleAuth(req, res, p) {
   if (p === '/api/auth/login') {
     const nope = () => json(res, 401, { error: 'wrong username or password' });
     if (!name || typeof body.password !== 'string' || body.password.length > 200) return nope();
-    if (lockedOut(name)) return json(res, 429, { error: 'too many attempts — try again in 15 minutes' });
+    const ip = clientIp(req);
+    if (lockedOut(name, ip)) return json(res, 429, { error: 'too many attempts — try again in 15 minutes' });
+    noteAttempt(name, ip);
     const user = db().findUser(name);
     const ok = user ? await auth.verifyPassword(body.password, user.pass) : await auth.burnVerify(body.password);
-    if (!ok) { noteFailure(name); return nope(); }
-    failures.delete(name);
+    if (!ok) return nope();
+    noteSuccess(name, ip);
     startSession(req, res, user);
     return json(res, 200, { user: { username: user.username } });
   }

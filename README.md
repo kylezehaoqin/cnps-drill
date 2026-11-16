@@ -123,7 +123,9 @@ older than 22.5 the same store falls back to JSON files in `data/accounts/`.
 - Passwords are hashed with scrypt. Sessions are an HttpOnly, SameSite=Lax cookie, and
   the database keeps only a hash of each token. A session lasts 30 days and renews
   while in use.
-- Ten wrong passwords for one username locks it out for 15 minutes.
+- Ten wrong passwords for one username from one address lock that pair out for 15 minutes;
+  50 from any address lock the name. Attempts count when they arrive, so a parallel
+  burst cannot get past the limit.
 - Writes must be same-origin JSON, which blocks cross-site form posts.
 - Behind a TLS proxy the cookie is marked `Secure` from `X-Forwarded-Proto`. Set
   `COOKIE_SECURE=1` to force that.

@@ -124,6 +124,20 @@ try {
   cookie = '';
   for (let i = 0; i < 10; i++) await call('POST', '/api/auth/login', { username: 'dee', password: 'wrongpass' });
   check((await call('POST', '/api/auth/login', { username: 'dee', password: 'wrongpass' })).status === 429, 'repeated failures lock the name out');
+  check((await call('POST', '/api/auth/login', { username: 'dee', password: 'wrongpass' }, { 'X-Forwarded-For': '203.0.113.9' })).status === 401,
+    'another client is not locked out by the first one\'s failures');
+
+  // Attempts are counted when they arrive, not after scrypt returns, so a burst
+  // of parallel guesses cannot all pass the lockout check before any is counted.
+  check((await call('POST', '/api/auth/register', { username: 'eve', password: 'eve-password' })).status === 201, 'register eve');
+  cookie = '';
+  const burst = [];
+  for (let i = 0; i < 10; i++) burst.push(call('POST', '/api/auth/login', { username: 'eve', password: `guess-${i}x` }, { 'X-Forwarded-For': '198.51.100.7' }));
+  await new Promise(res => setTimeout(res, 20));
+  const late = await call('POST', '/api/auth/login', { username: 'eve', password: 'eve-password' }, { 'X-Forwarded-For': '198.51.100.7' });
+  await Promise.all(burst);
+  check(late.status === 429, 'the 11th attempt in a parallel burst is refused, even with the right password');
+  cookie = '';
 } finally {
   server.close();
   fs.rmSync(tmp, { recursive: true, force: true });
