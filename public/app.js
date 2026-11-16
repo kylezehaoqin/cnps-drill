@@ -2,6 +2,7 @@
 import { scoreBinomial, scoreCommon, indexNames } from './matcher.mjs';
 import { ladderFor, isSolid as schedIsSolid, weakness, advance } from './scheduler.mjs';
 import { recordMiss } from './stats.mjs';
+import { totalReps, chooseState, whoami, authenticate, signOut } from './account.mjs';
 /* CNPS Sight-ID Drill — client */
 
 /* ============================ constants ============================ */
@@ -62,9 +63,14 @@ function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.r
 /* ============================ persistence ============================ */
 /* localStorage is the source of truth and is written synchronously on every
    answer. The server copy is a best-effort mirror so progress follows the
-   device. Either can be missing without breaking the other. */
+   device. Either can be missing without breaking the other.
+   Signed in, both copies key to the account instead of the profile name; '@'
+   cannot appear in a cleaned profile name, so the two never collide. */
 
-const LS_KEY = () => `cnps-drill:${state.cfg.profile}`;
+let account = null;   // {username} while signed in
+let signup = true;
+const LS_KEY = () => account ? `cnps-drill:@${account.username}` : `cnps-drill:${state.cfg.profile}`;
+const stateUrl = () => account ? '/api/me/state' : `/api/state/${encodeURIComponent(state.cfg.profile)}`;
 let syncTimer = null, lastServerOk = 0;
 
 function saveLocal() {
@@ -74,20 +80,28 @@ function saveLocal() {
   } catch (e) { return false; }
 }
 
+async function pushServer() {
+  const r = await fetch(stateUrl(), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state),
+  });
+  if (!r.ok) throw new Error(r.status);
+  lastServerOk = Date.now();
+}
+
 function save() {
   const localOk = saveLocal();
   clearTimeout(syncTimer);
   syncTimer = setTimeout(async () => {
     try {
-      const r = await fetch(`/api/state/${encodeURIComponent(state.cfg.profile)}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state),
-      });
-      if (!r.ok) throw new Error(r.status);
-      lastServerOk = Date.now();
+      await pushServer();
       setSync(`saved \u00b7 ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, false);
     } catch (e) {
-      setSync(localOk ? 'saved on this device \u00b7 server sync failed' : 'NOT SAVED \u2014 storage blocked', !localOk);
+      // A 401 means the session lapsed or was revoked: the answers are safe on
+      // this device and sync again once the account signs back in.
+      const msg = e.message === '401' ? 'saved on this device \u00b7 signed out on the server, sign in again to sync'
+        : 'saved on this device \u00b7 server sync failed';
+      setSync(localOk ? msg : 'NOT SAVED \u2014 storage blocked', !localOk || e.message === '401');
     }
   }, 600);
 }
@@ -107,9 +121,28 @@ async function load(profile) {
   } catch {}
 
   // Whichever has more total reps wins; ties go to local.
-  const weight = s => s ? Object.values(s.cards || {}).reduce((n, k) => n + (k.reps || 0), 0) : -1;
-  const chosen = weight(server) > weight(local) ? server : local;
+  adopt(totalReps(server) > totalReps(local) ? server : local, cfgProfile);
+  localStorage.setItem('cnps-drill:lastProfile', cfgProfile);
+}
 
+// The signed-in counterpart of load(). `guest` is the anonymous deck on screen
+// at sign-in, offered to an empty account (see chooseState). Returns whether it
+// was taken, so the caller can push it up straight away.
+async function loadAccount(guest) {
+  let cached = null, server = null, serverKnown = false;
+  try { cached = JSON.parse(localStorage.getItem(LS_KEY()) || 'null'); } catch {}
+  try {
+    const r = await fetch('/api/me/state', { cache: 'no-store' });
+    if (r.ok) { server = await r.json(); serverKnown = true; }
+  } catch {}
+  const { chosen, adopted } = chooseState({ cached, server, serverKnown, guest });
+  const profile = state.cfg.profile;
+  state = { cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [], misses: [], cfg: { ...DEFAULT_CFG } };
+  adopt(chosen && JSON.parse(JSON.stringify(chosen)), profile);
+  return adopted;
+}
+
+function adopt(chosen, cfgProfile) {
   if (chosen) {
     state = Object.assign({ cards: {}, seenToday: 0, dayStamp: dayStamp(), history: [], misses: [] }, chosen);
     state.cfg = Object.assign({ ...DEFAULT_CFG }, chosen.cfg || {});
@@ -120,7 +153,6 @@ async function load(profile) {
   // Additive field: an older saved profile has no `misses` — start capturing.
   if (!Array.isArray(state.misses)) state.misses = [];
   if (state.dayStamp !== dayStamp()) { state.dayStamp = dayStamp(); state.seenToday = 0; }
-  localStorage.setItem('cnps-drill:lastProfile', cfgProfile);
 }
 
 /* Answer matching moved to matcher.mjs (imported at top). */
@@ -548,8 +580,56 @@ function renderSetup() {
     renderSetup(); applyConfig(true);
   };
 
+  renderAccount();
   renderPoolNote();
   refreshCacheStatus();
+}
+
+/* ============================ account ============================ */
+
+function renderWho() {
+  $('#who').innerHTML = account ? `signed in <b>${esc(account.username)}</b>` : `profile <b>${esc(state.cfg.profile)}</b>`;
+}
+
+function renderAccount(msg) {
+  $('#acct-out').style.display = account ? 'none' : '';
+  $('#acct-in').style.display = account ? '' : 'none';
+  $('#btn-register').style.display = signup ? '' : 'none';
+  if (account) $('#acct-name').textContent = account.username;
+  // The profile name only picks an anonymous deck; signed in, the account is the key.
+  $('#f-profile').disabled = !!account;
+  $('#acct-msg').textContent = msg || '';
+}
+
+async function doAuth(action) {
+  const user = $('#f-user').value.trim(), pass = $('#f-pass').value;
+  if (!user || !pass) return renderAccount('Enter a username and password.');
+  $('#btn-login').disabled = $('#btn-register').disabled = true;
+  const r = await authenticate(action, user, pass);
+  $('#btn-login').disabled = $('#btn-register').disabled = false;
+  if (r.error) return renderAccount(r.error);
+  $('#f-pass').value = '';
+  clearTimeout(syncTimer);
+  const guest = state;
+  account = r.user;
+  if (await loadAccount(guest)) save();
+  renderWho(); renderSetup(); applyConfig(true); renderProgress(); renderBrowse();
+  setSync(`signed in as ${account.username}`);
+}
+
+// Flush the pending sync before forgetting the session. The device copy is
+// dropped only once the server holds it, so a shared machine keeps no trace of
+// the account, and an offline sign-out loses nothing.
+async function doSignOut() {
+  clearTimeout(syncTimer);
+  let flushed = false;
+  try { await pushServer(); flushed = true; } catch {}
+  if (flushed) { try { localStorage.removeItem(LS_KEY()); } catch {} }
+  await signOut();
+  account = null;
+  await load();
+  renderWho(); renderSetup(); applyConfig(true); renderProgress(); renderBrowse();
+  setSync(flushed ? 'signed out' : 'signed out \u00b7 unsynced answers kept on this device');
 }
 
 function renderPoolNote() {
@@ -806,11 +886,18 @@ document.addEventListener('keydown', e => {
   FAMILIES = [...new Set(TAXA.map(t => t.family))].sort();
   indexNames(TAXA);  // arm the stem-typo relaxation with the real name list
 
-  await load();
-  $('#who').innerHTML = `profile <b>${esc(state.cfg.profile)}</b>`;
+  const me = await whoami();
+  if (me) signup = me.signup !== false;
+  if (me && me.user) { account = me.user; await loadAccount(null); }
+  else await load();
+  renderWho();
+
+  $('#acct-form').onsubmit = e => { e.preventDefault(); doAuth('login'); };
+  $('#btn-register').onclick = () => doAuth('register');
+  $('#btn-logout').onclick = () => doSignOut();
 
   $('#btn-reset').onclick = async () => {
-    if (!confirm('Clear all scheduling and accuracy for this profile? This cannot be undone.')) return;
+    if (!confirm(`Clear all scheduling and accuracy for ${account ? 'this account' : 'this profile'}? This cannot be undone.`)) return;
     state.cards = {}; state.seenToday = 0; state.history = [];
     save(); applyConfig(true); renderProgress(); renderBrowse();
   };
@@ -818,7 +905,7 @@ document.addEventListener('keydown', e => {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `cnps-drill-${state.cfg.profile}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `cnps-drill-${account ? account.username : state.cfg.profile}-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
   };
   $('#search').oninput = renderBrowse;

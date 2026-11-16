@@ -95,9 +95,11 @@ readiness signal; the drill tally is not.
   a time works better than shuffling all 500.
 - **Strict spelling** demands an exact match. Off by default: a misspelling that still
   identifies the taxon takes the point and comes back amber.
-- **Profile** is the save key. Progress writes to the browser instantly and mirrors to
-  the server under that name, so a phone and a laptop on the same profile stay in sync.
-  A different name is a separate deck.
+- **Account.** Create one in Setup and your progress is kept on the server behind a
+  password, on any device you sign in from. The first sign-in to an empty account brings
+  the deck on screen with it, so existing progress moves across.
+- **Profile** is the save key when signed out. Progress writes to the browser instantly
+  and mirrors to the server under that name. A different name is a separate deck.
 
 **Progress** ranks families worst-first and lists leeches (3+ lapses). Leeches want a
 photo session, not another flip.
@@ -111,10 +113,26 @@ Progress is written to `localStorage` synchronously on every answer, then mirror
 other down; the status line under the drill card says which happened. On load, whichever
 copy has more total reps wins.
 
-There is no authentication. Anyone who can reach the URL can read and overwrite any
-profile. For a public VPS, turn on basic auth in the nginx config.
+### Accounts
 
-Back up by copying `data/states/`, or use **Export JSON** in Setup.
+Signed in, the same two copies key to the account instead: `localStorage` on the device,
+and a row in `data/accounts.db`. That's a SQLite file through Node's built-in
+`node:sqlite`, so there's still no dependency, and it works with `OFFLINE=1`. On a Node
+older than 22.5 the same store falls back to JSON files in `data/accounts/`.
+
+- Passwords are hashed with scrypt. Sessions are an HttpOnly, SameSite=Lax cookie, and
+  the database keeps only a hash of each token. A session lasts 30 days and renews
+  while in use.
+- Ten wrong passwords for one username locks it out for 15 minutes.
+- Writes must be same-origin JSON, which blocks cross-site form posts.
+- Behind a TLS proxy the cookie is marked `Secure` from `X-Forwarded-Proto`. Set
+  `COOKIE_SECURE=1` to force that.
+
+Anonymous profiles (`/api/state/<profile>`) still work and are still open to anyone
+with the URL. Once everyone has moved into an account, set `ANON_PROFILES=0` to turn
+them off. `SIGNUP=0` closes registration.
+
+Back up by copying `data/` (`states/`, `accounts.db*`), or use **Export JSON** in Setup.
 
 ---
 
@@ -126,11 +144,16 @@ scripts/warm.js        bulk prefetch
 public/                index.html, app.js, styles.css
 data/taxa.json         the 500 taxa
 data/photos/<id>/      cached plates + meta.json (attribution, licence)
-data/states/           saved progress per profile
+data/states/           saved progress per anonymous profile
+data/accounts.db       users, sessions, per-account progress (SQLite)
+lib/                   auth.js (hashing, cookies), store.js (account storage adapter)
 ```
 
 Environment: `PORT` (8080), `HOST` (0.0.0.0), `DATA_DIR`, `PHOTOS_PER_TAXON` (6),
-`OFFLINE` (set to `1` to disable outbound fetching).
+`OFFLINE` (set to `1` to disable outbound fetching), `DB_FILE` (default
+`$DATA_DIR/accounts.db`), `SIGNUP` (`0` closes registration), `ANON_PROFILES` (`0`
+turns off the unauthenticated profile API), `COOKIE_SECURE` (`1` forces `Secure`
+cookies).
 
 ---
 

@@ -78,6 +78,29 @@
     </fieldset>
 
     <fieldset>
+      <legend>Account</legend>
+      <div id="acct-out">
+        <form id="acct-form" class="opt-row" style="align-items:flex-end" autocomplete="on">
+          <label class="fld"><span>Username</span><input type="text" id="f-user" autocomplete="username"
+            autocapitalize="none" spellcheck="false" style="width:150px"></label>
+          <label class="fld"><span>Password</span><input type="password" id="f-pass" autocomplete="current-password"
+            style="width:150px"></label>
+          <button class="btn" id="btn-login" type="submit">Sign in</button>
+          <button class="btn ghost" id="btn-register" type="button">Create account</button>
+        </form>
+        <p class="hint">An account keeps your progress on the server behind a password, so it follows you to any
+          device and nobody else can read or overwrite it. Signing in to a new, empty account brings the deck on
+          screen with you.</p>
+      </div>
+      <div id="acct-in" style="display:none">
+        <p class="hint" style="margin:0 0 12px">Signed in as <b id="acct-name"></b>. Progress saves to this device
+          and to your account.</p>
+        <button class="btn ghost" id="btn-logout" type="button">Sign out</button>
+      </div>
+      <p class="hint bad" id="acct-msg"></p>
+    </fieldset>
+
+    <fieldset id="profile-box">
       <legend>Profile &amp; storage</legend>
       <label class="fld"><span>Profile name</span><input type="search" id="f-profile" style="width:170px"></label>
       <p class="hint" style="margin-bottom:12px">Progress writes to this browser immediately and mirrors to the server

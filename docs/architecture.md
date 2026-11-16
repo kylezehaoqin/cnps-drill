@@ -145,7 +145,8 @@ real browser):
 3. **`MODES` registry** — render/check/reveal dispatch off per-mode data; no `activeMode === '...'`
    branches remain.
 
-Still available when needed (not yet built): the storage adapter (§3, for accounts), the data-source
+The storage adapter (§3) now exists for accounts: `lib/store.js`, one interface over
+`node:sqlite` with a JSON-file fallback for Node < 22.5. Still available when needed (not yet built): the data-source
 adapter (§4), and the side-car enrichment convention (§5) — pull these in as the features that need
 them arrive. Next: pick a feature from `learning-features.md` and build it as a registry entry +
 additive state, not a branch.

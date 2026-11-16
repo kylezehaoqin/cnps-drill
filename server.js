@@ -6,8 +6,14 @@
  *
  *   GET  /                      app
  *   GET  /api/taxa              the 500 taxa
- *   GET  /api/state/:profile    saved progress (JSON)
- *   PUT  /api/state/:profile    save progress
+ *   GET  /api/state/:profile    saved progress (JSON), anonymous named profile
+ *   PUT  /api/state/:profile    save progress (disabled by ANON_PROFILES=0)
+ *   POST /api/auth/register     {username, password} -> session cookie
+ *   POST /api/auth/login        {username, password} -> session cookie
+ *   POST /api/auth/logout
+ *   GET  /api/auth/me           {user: {username}} | {user: null}
+ *   GET  /api/me/state          the signed-in user's progress
+ *   PUT  /api/me/state          save it
  *   GET  /api/photos/:id        photo manifest for taxon id (fetches + caches on miss)
  *   GET  /photos/:id/:n.jpg     cached image bytes
  *   GET  /api/cache-status      how warm the photo cache is
@@ -18,6 +24,8 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const auth = require('./lib/auth');
+const { openStore } = require('./lib/store');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -28,6 +36,13 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 const PHOTOS_PER_TAXON = Number(process.env.PHOTOS_PER_TAXON || 6);
 const OFFLINE = process.env.OFFLINE === '1';
+// Open sign-up by default; SIGNUP=0 once the people who need accounts have them.
+const SIGNUP = process.env.SIGNUP !== '0';
+// The pre-account named profiles: anyone with the URL can read or overwrite
+// any of them. Kept on so existing saves keep working; ANON_PROFILES=0 turns
+// them off once everyone has moved into an account.
+const ANON_PROFILES = process.env.ANON_PROFILES !== '0';
+const SESSION_MS = 30 * 86400e3;
 
 const TAXA = JSON.parse(fs.readFileSync(path.join(DATA, 'taxa.json'), 'utf8'));
 const BY_ID = new Map(TAXA.map(t => [t.id, t]));
@@ -328,6 +343,134 @@ async function readBody(req, limit = 4e6) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/* ------------------------------------------------------------------ */
+/* accounts                                                            */
+/* ------------------------------------------------------------------ */
+
+// Opened on first use, not on import: scripts/warm.js requires this file and
+// never touches accounts.
+let store = null;
+const db = () => store || (store = openStore({
+  dbFile: process.env.DB_FILE || path.join(DATA, 'accounts.db'),
+  dir: path.join(DATA, 'accounts'),
+}));
+
+// Behind Caddy the app sees plain http; the proxy says what the browser used.
+const isHttps = req => !!req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https'
+  || process.env.COOKIE_SECURE === '1';
+
+// CSRF: SameSite=Lax already keeps the cookie off cross-site fetches, and
+// requiring a JSON body forces a CORS preflight on any cross-site form post.
+// The Origin check is the belt to those braces.
+function writeAllowed(req) {
+  if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return false;
+  const o = req.headers.origin;
+  if (!o) return true;
+  try { return new URL(o).host === req.headers.host; } catch { return false; }
+}
+
+// Sliding expiry: a session in use is renewed once it is past half its life,
+// so someone studying daily is never signed out, and an idle one lapses.
+function currentUser(req, res) {
+  const tok = auth.parseCookies(req.headers.cookie)[auth.COOKIE];
+  if (!tok) return null;
+  const hash = auth.tokenHash(tok);
+  const s = db().getSession(hash);
+  if (!s) return null;
+  if (s.expires - Date.now() < SESSION_MS / 2) {
+    db().touchSession(hash, Date.now() + SESSION_MS);
+    res.setHeader('Set-Cookie', auth.sessionCookie(tok, { maxAge: SESSION_MS, secure: isHttps(req) }));
+  }
+  return { id: s.userId, username: s.username };
+}
+
+function startSession(req, res, user) {
+  const tok = auth.newToken();
+  db().createSession(auth.tokenHash(tok), user.id, Date.now() + SESSION_MS);
+  res.setHeader('Set-Cookie', auth.sessionCookie(tok, { maxAge: SESSION_MS, secure: isHttps(req) }));
+}
+
+// Per-username, not per-IP: behind the proxy every request shares one address.
+// Ten wrong passwords locks that name out for fifteen minutes.
+const failures = new Map();
+const LOCK_AFTER = 10, LOCK_MS = 15 * 60e3;
+function lockedOut(name) {
+  const f = failures.get(name);
+  if (f && Date.now() - f.first > LOCK_MS) { failures.delete(name); return false; }
+  return !!f && f.n >= LOCK_AFTER;
+}
+function noteFailure(name) {
+  const f = failures.get(name);
+  if (!f || Date.now() - f.first > LOCK_MS) failures.set(name, { n: 1, first: Date.now() });
+  else f.n++;
+}
+
+async function readJson(req, limit) {
+  try { return JSON.parse(await readBody(req, limit)); } catch { return null; }
+}
+
+async function handleAuth(req, res, p) {
+  if (p === '/api/auth/me') {
+    if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
+    const u = currentUser(req, res);
+    return json(res, 200, { user: u && { username: u.username }, signup: SIGNUP }, { 'Cache-Control': 'no-store' });
+  }
+
+  if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+  if (!writeAllowed(req)) return json(res, 403, { error: 'cross-origin or non-JSON request' });
+
+  if (p === '/api/auth/logout') {
+    const tok = auth.parseCookies(req.headers.cookie)[auth.COOKIE];
+    if (tok) db().deleteSession(auth.tokenHash(tok));
+    return json(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie(isHttps(req)) });
+  }
+
+  const body = await readJson(req, 4096) || {};
+  const name = auth.cleanUsername(body.username);
+
+  if (p === '/api/auth/register') {
+    if (!SIGNUP) return json(res, 403, { error: 'sign-up is closed' });
+    if (!name) return json(res, 400, { error: 'username: 3–32 letters, digits, - or _' });
+    if (!auth.passwordOk(body.password)) return json(res, 400, { error: 'password: at least 8 characters' });
+    const user = db().createUser(name, await auth.hashPassword(body.password));
+    if (!user) return json(res, 409, { error: 'that username is taken' });
+    startSession(req, res, user);
+    return json(res, 201, { user: { username: user.username } });
+  }
+
+  if (p === '/api/auth/login') {
+    const nope = () => json(res, 401, { error: 'wrong username or password' });
+    if (!name || typeof body.password !== 'string' || body.password.length > 200) return nope();
+    if (lockedOut(name)) return json(res, 429, { error: 'too many attempts — try again in 15 minutes' });
+    const user = db().findUser(name);
+    const ok = user ? await auth.verifyPassword(body.password, user.pass) : await auth.burnVerify(body.password);
+    if (!ok) { noteFailure(name); return nope(); }
+    failures.delete(name);
+    startSession(req, res, user);
+    return json(res, 200, { user: { username: user.username } });
+  }
+
+  return json(res, 404, { error: 'not found' });
+}
+
+async function handleMyState(req, res) {
+  const u = currentUser(req, res);
+  if (!u) return json(res, 401, { error: 'not signed in' });
+  if (req.method === 'GET') {
+    const s = db().loadState(u.id);
+    return send(res, 200, s || 'null', { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+  }
+  if (req.method === 'PUT' || req.method === 'POST') {
+    if (!writeAllowed(req)) return json(res, 403, { error: 'cross-origin or non-JSON request' });
+    const body = await readBody(req);
+    try { JSON.parse(body); }
+    catch { return json(res, 400, { error: 'body must be valid JSON' }); }
+    db().saveState(u.id, body);
+    return json(res, 200, { ok: true, savedAt: Date.now() });
+  }
+  return json(res, 405, { error: 'method not allowed' });
+}
+
 async function serveFile(res, file, cache) {
   try {
     const buf = await fsp.readFile(file);
@@ -351,9 +494,14 @@ const server = http.createServer(async (req, res) => {
     // and a day-long cache silently serves stale taxa until a hard refresh.
     if (p === '/api/taxa') return json(res, 200, TAXA, { 'Cache-Control': 'public, max-age=300' });
 
+    /* ---- accounts ---- */
+    if (p.startsWith('/api/auth/')) return await handleAuth(req, res, p);
+    if (p === '/api/me/state') return await handleMyState(req, res);
+
     /* ---- state ---- */
     let m = p.match(/^\/api\/state\/([^/]+)$/);
     if (m) {
+      if (!ANON_PROFILES) return json(res, 410, { error: 'anonymous profiles are off — sign in' });
       const file = path.join(STATES, safeProfile(m[1]) + '.json');
       if (req.method === 'GET') {
         try { return send(res, 200, await fsp.readFile(file), { 'Content-Type': MIME['.json'] }); }
@@ -435,4 +583,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ensurePhotos, TAXA, server, applyCuration, licenseOk, pickTaxon, resolveTaxonId };
+module.exports = { db, ensurePhotos, TAXA, server, applyCuration, licenseOk, pickTaxon, resolveTaxonId };

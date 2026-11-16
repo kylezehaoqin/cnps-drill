@@ -1,6 +1,7 @@
 FROM node:22-alpine
 WORKDIR /app
 COPY server.js ./
+COPY lib ./lib
 COPY scripts ./scripts
 COPY public ./public
 COPY data/taxa.json ./data/taxa.json

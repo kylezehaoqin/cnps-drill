@@ -56,7 +56,11 @@ a new mode goes in the registry — behaviour-preserving under `check.sh`.
 ## Layout
 
 ```
-server.js              http, state API, iNaturalist photo proxy + disk cache
+server.js              http, state + account API, iNaturalist photo proxy + disk cache
+lib/auth.js            scrypt hashing, session tokens, cookies — pure, tested
+lib/store.js           account storage adapter: node:sqlite, JSON-file fallback
+public/account.mjs     client auth calls + chooseState (sign-in merge rule) — pure
+test/accounts.test.mjs hashing, both store adapters, merge rule, HTTP auth flow
 scripts/warm.js        bulk photo prefetch
 test/scoring.test.mjs  the matcher tests — run these after any matcher change
 public/index.html      shell markup
@@ -65,13 +69,14 @@ public/matcher.mjs     the answer matcher — pure, no DOM; imported by app.js +
 public/styles.css      herbarium determination-slip aesthetic
 data/taxa.json         the 500 taxa, generated once, treated as source of truth
 data/photos/<id>/      cached plates + meta.json (attribution, licence)
-data/states/           saved progress, one JSON per profile
+data/states/           saved progress, one JSON per anonymous profile
+data/accounts.db       users, sessions, per-account progress (gitignored, on the volume)
 ```
 
 ## Workflow
 
 **Run `./scripts/check.sh` after every change.** It is the only gate that
-matters — eight steps covering syntax, that `matcher.mjs` still exports its
+matters — nine steps covering syntax, that `matcher.mjs` still exports its
 scorers, the scoring assertions including exhaustive 500x500 cross-collision
 checks, dataset integrity, the DOM id contract between `app.js` and
 `index.html`, a live server smoke test (including the `.mjs` MIME so the browser
@@ -234,8 +239,11 @@ ease factor; the ladder is fixed and lapses reset to step 0.
 - Genus-level flagging is inferred from `spp.` in the name. CNPS marks those in
   red on the source PDF and colour does not survive text extraction. 60 are
   flagged; cross-check against the Excel on the CNPS study guide page.
-- No authentication anywhere. Anyone with the URL can read and overwrite any
-  profile. Basic auth belongs in the reverse proxy — see `nginx.conf.example`.
+- Accounts (scrypt passwords, cookie sessions, SQLite via `node:sqlite`) protect
+  per-user progress, but the anonymous `/api/state/<profile>` API is still open to
+  anyone with the URL until `ANON_PROFILES=0`. `node:sqlite` prints an
+  ExperimentalWarning that `lib/store.js` mutes; check.sh fails on any warning, so
+  keep that mute narrow. There is no password reset; an admin edits the DB.
 - iNaturalist coverage of genus-only entries is thin; some have no plate and
   fall back to drilling from the name.
 - `data/taxa.json` was generated once from the CNPS PDF and hand-patched for
@@ -254,6 +262,8 @@ without their reasons attached. Match that. No comments that restate the code.
 A push to `master` deploys: `.github/workflows/deploy.yml` runs `npm test`, builds an image, pushes it to `ghcr.io/kylezehaoqin/cnps-drill:<sha>`, then calls `deploy-gate app cnps-drill` on the VPS over SSH. The gate pulls the image, waits up to 60 s for the Docker `HEALTHCHECK`, and rolls back to the previous image if it fails. Production runs at https://cnps-drill.kzhqin.com behind Caddy basic auth (not nginx; `nginx.conf.example` and `cnps-drill.service` are the old manual paths).
 
 - **Keep the `HEALTHCHECK` in the `Dockerfile`.** The gate refuses images without one.
+- **The `Dockerfile` copies paths explicitly.** A new server-side directory needs its own `COPY` (check.sh step 9 guards `lib/`), or the image builds and then crash-loops.
+- Accounts live in `/opt/apps/cnps-drill/data/accounts.db` (+ `-wal`/`-shm`). Caddy basic auth in front is now optional; dropping it is an infra-repo change.
 - The production compose file is **not** this repo's `docker-compose.yml` (that one is for local dev). It is `~/dev/vps/apps/cnps-drill/compose.yml` in the private infra repo, with `OFFLINE=1`.
 - Data lives on the VPS at `/opt/apps/cnps-drill/data` (photos + `states/`), backed up nightly.
 - Watch a deploy: `gh run watch <id> -R kylezehaoqin/cnps-drill --exit-status`. Roll back: re-run the Actions job of the last good commit.

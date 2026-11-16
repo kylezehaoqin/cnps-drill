@@ -12,7 +12,7 @@ ok()   { printf '  ok    %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 step "1. syntax"
-for f in server.js scripts/warm.js public/app.js public/matcher.mjs public/scheduler.mjs public/stats.mjs test/scoring.test.mjs test/scheduler.test.mjs test/stats.test.mjs test/photos.test.js test/workflow.test.mjs; do
+for f in server.js lib/auth.js lib/store.js scripts/warm.js public/app.js public/account.mjs public/matcher.mjs public/scheduler.mjs public/stats.mjs test/scoring.test.mjs test/scheduler.test.mjs test/stats.test.mjs test/photos.test.js test/workflow.test.mjs test/accounts.test.mjs; do
   if node --check "$f" 2>/dev/null; then ok "$f"; else bad "$f does not parse"; fi
 done
 
@@ -54,6 +54,13 @@ else
   bad "stats tests"
 fi
 
+if out=$(node test/accounts.test.mjs 2>&1); then
+  ok "$(printf '%s' "$out" | grep -c '^ok') account assertions pass"
+else
+  printf '%s\n' "$out" | grep -E '^FAIL|FAILURE|Error' | sed 's/^/  /'
+  bad "account tests"
+fi
+
 if out=$(node test/workflow.test.mjs 2>&1); then
   ok "$(printf '%s' "$out" | grep -c '^ok') deploy-workflow assertions pass"
 else
@@ -89,9 +96,10 @@ console.log("  ok    "+q.size+" queried ids all accounted for");
 
 step "6. server smoke test"
 PORT_T=$(node -e 'const n=require("net"),s=n.createServer();s.listen(0,()=>{console.log(s.address().port);s.close()})')
-OFFLINE=1 PORT="$PORT_T" node server.js >/tmp/check-srv.log 2>&1 &
+DB_T=$(mktemp -u /tmp/check-accounts.XXXXXX.db)
+OFFLINE=1 PORT="$PORT_T" DB_FILE="$DB_T" node server.js >/tmp/check-srv.log 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null' EXIT
+trap 'kill $SRV 2>/dev/null; rm -f "$DB_T" "$DB_T-wal" "$DB_T-shm"' EXIT
 sleep 1.5
 
 hit() { curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$PORT_T$1"; }
@@ -102,6 +110,7 @@ hit() { curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:$P
 [ "$(hit /matcher.mjs)" = 200 ] && ok "GET /matcher.mjs" || bad "GET /matcher.mjs"
 mjs_ct=$(curl -s -o /dev/null -w '%{content_type}' --max-time 4 "http://127.0.0.1:$PORT_T/matcher.mjs")
 case "$mjs_ct" in *javascript*) ok "matcher.mjs served as javascript" ;; *) bad "matcher.mjs MIME is '$mjs_ct' (browser will refuse the module)" ;; esac
+[ "$(hit /account.mjs)" = 200 ] && ok "GET /account.mjs" || bad "GET /account.mjs"
 [ "$(hit /styles.css)" = 200 ]  && ok "GET /styles.css" || bad "GET /styles.css"
 n=$(curl -s --max-time 4 "http://127.0.0.1:$PORT_T/api/taxa" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).length))')
 [ "$n" = 500 ] && ok "GET /api/taxa -> 500" || bad "GET /api/taxa -> $n"
@@ -110,6 +119,18 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -X PUT -H 'Content-Ty
 [ "$code" = 200 ] && ok "PUT /api/state" || bad "PUT /api/state -> $code"
 [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -X PUT -d 'nope' "http://127.0.0.1:$PORT_T/api/state/_checkrun")" = 400 ] \
   && ok "PUT rejects malformed JSON" || bad "PUT should reject malformed JSON with 400"
+
+JAR=$(mktemp)
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -c "$JAR" -H 'Content-Type: application/json' \
+  -d '{"username":"checkrun","password":"checkrun-pass"}' "http://127.0.0.1:$PORT_T/api/auth/register")
+[ "$code" = 201 ] && ok "POST /api/auth/register" || bad "POST /api/auth/register -> $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -b "$JAR" -X PUT -H 'Content-Type: application/json' \
+  -d '{"cards":{}}' "http://127.0.0.1:$PORT_T/api/me/state")
+[ "$code" = 200 ] && ok "PUT /api/me/state with a session" || bad "PUT /api/me/state -> $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -X PUT -H 'Content-Type: application/json' \
+  -d '{"cards":{}}' "http://127.0.0.1:$PORT_T/api/me/state")
+[ "$code" = 401 ] && ok "PUT /api/me/state without a session -> 401" || bad "unauthenticated PUT /api/me/state -> $code"
+rm -f "$JAR"
 
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 rm -f data/states/_checkrun.json
@@ -131,6 +152,11 @@ step "8. answer-check wiring cannot leak a click event into 'skipped'"
 # through a wrapper rather than the bare reference.
 if grep -Eq 'skipped *= *skipped *=== *true' public/app.js; then ok "doCheck coerces skipped to boolean"; else bad "doCheck no longer coerces skipped === true"; fi
 if grep -Eq "\\\$\('#check'\)\.onclick *= *doCheck *;" public/app.js; then bad "#check binds bare doCheck; a click leaks the event as skipped"; else ok "#check binding does not pass the click event"; fi
+
+step "9. the image ships every server module"
+# server.js requires ./lib/*; the Dockerfile copies files explicitly, so a lib
+# left out builds fine and crash-loops on boot until deploy-gate rolls back.
+if grep -Eq '^COPY lib ' Dockerfile; then ok "Dockerfile copies lib/"; else bad "Dockerfile does not COPY lib/ (server.js requires it)"; fi
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then printf '\033[32mall checks pass\033[0m\n'; else printf '\033[31m%s check(s) failed\033[0m\n' "$fails"; fi

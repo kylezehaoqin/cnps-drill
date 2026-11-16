@@ -1,4 +1,6 @@
 data/photos
 data/states
+data/accounts
+data/accounts.db*
 node_modules
 *.tar.gz
