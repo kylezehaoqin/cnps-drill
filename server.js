@@ -390,13 +390,15 @@ function startSession(req, res, user) {
   res.setHeader('Set-Cookie', auth.sessionCookie(tok, { maxAge: SESSION_MS, secure: isHttps(req) }));
 }
 
-// Two counters per login attempt. Per name and client: ten tries locks that
-// pair for fifteen minutes, so a stranger cannot lock someone else out. Per
-// name alone, a higher bar stops a guesser who rotates addresses.
+// Three counters per login attempt, each over fifteen minutes. Per name and
+// client: ten tries locks that pair, so a stranger cannot lock someone else
+// out. Per name: fifty stops a guesser who rotates addresses. Per client: a
+// hundred across all names, so one address cannot fill the table below and
+// push live lockouts out of it.
 // Attempts count when they arrive, before scrypt runs: counting after the
 // await let a parallel burst pass the check before any of it was counted.
 const failures = new Map();
-const LOCK_AFTER = 10, LOCK_NAME_AFTER = 50, LOCK_MS = 15 * 60e3;
+const LOCK_AFTER = 10, LOCK_NAME_AFTER = 50, LOCK_IP_AFTER = 100, LOCK_MS = 15 * 60e3;
 
 // Caddy is the only client that can reach the port (127.0.0.1 in compose) and
 // it overwrites X-Forwarded-For with the real address. A direct client's own
@@ -414,11 +416,14 @@ function live(key) {
   return f || null;
 }
 function lockedOut(name, ip) {
-  const pair = live(`${name}|${ip}`), all = live(name);
-  return (!!pair && pair.n >= LOCK_AFTER) || (!!all && all.n >= LOCK_NAME_AFTER);
+  const pair = live(`${name}|${ip}`), all = live(name), addr = live(`ip:${ip}`);
+  return (!!pair && pair.n >= LOCK_AFTER) || (!!all && all.n >= LOCK_NAME_AFTER)
+    || (!!addr && addr.n >= LOCK_IP_AFTER);
 }
-// A flood of made-up names adds keys; the cap drops the oldest (a Map keeps
-// insertion order), and a timer sweeps expired ones, so no request pays for it.
+// The per-client counter means filling this table takes hundreds of
+// addresses; if it fills anyway, the cap drops the oldest entry (a Map keeps
+// insertion order) instead of growing. A timer sweeps expired entries, so no
+// request pays for it.
 const MAX_KEYS = 50000;
 function bump(key, by) {
   const f = live(key);
@@ -429,11 +434,11 @@ function bump(key, by) {
 }
 setInterval(() => { for (const k of [...failures.keys()]) live(k); }, 60e3).unref();
 function noteAttempt(name, ip) {
-  bump(`${name}|${ip}`, 1); bump(name, 1);
+  bump(`${name}|${ip}`, 1); bump(name, 1); bump(`ip:${ip}`, 1);
 }
 function noteSuccess(name, ip) {
   failures.delete(`${name}|${ip}`);
-  bump(name, -1);
+  bump(name, -1); bump(`ip:${ip}`, -1);
 }
 
 async function readJson(req, limit) {

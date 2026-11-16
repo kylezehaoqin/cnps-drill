@@ -138,6 +138,13 @@ try {
   await Promise.all(burst);
   check(late.status === 429, 'the 11th attempt in a parallel burst is refused, even with the right password');
   cookie = '';
+
+  // One address cannot spread guesses over many names to fill the failure
+  // table and push real lockouts out of it.
+  for (let i = 0; i < 100; i++) await call('POST', '/api/auth/login', { username: `nobody${i}`, password: 'wrongpass' }, { 'X-Forwarded-For': '192.0.2.44' });
+  check((await call('POST', '/api/auth/login', { username: 'fresh', password: 'wrongpass' }, { 'X-Forwarded-For': '192.0.2.44' })).status === 429,
+    'one address is capped across all names');
+  cookie = '';
 } finally {
   server.close();
   fs.rmSync(tmp, { recursive: true, force: true });
